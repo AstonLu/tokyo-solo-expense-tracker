@@ -36,6 +36,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# database
+/data/expenses.db
+
+# env (keep example, ignore actual)
+.env.local.example
+!.env.local.example
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
