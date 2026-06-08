@@ -1,120 +1,76 @@
-# MEMORY.md — Tokyo Solo Expense Tracker
+# MEMORY.md — Tokyo Solo Expense Capture
 
-Current project state for AI agents. Read this alongside `docs/ai/HANDOVER.md`.
+Current baseline for AI agents. Read with `docs/ai/HANDOVER.md`.
 
 ---
 
-## Architecture (decided 2026-06-09)
+## Product (current)
+
+Solo travel expense capture. Send a Telegram **photo** (receipt / payment screenshot /
+paper invoice) with optional **text context** → AI vision extracts → Google Sheets →
+mobile dashboard. Image-first; plain text is a secondary path.
+
+> Note: an earlier session built an Aston/Amy **split** version. The 2026-06-09 respec
+> removed split/payer and pivoted to this solo OCR-first schema. Do not reintroduce
+> split unless explicitly asked.
+
+## Architecture
 
 ```
-Telegram message / photo
-    ↓
-Next.js API route  (/api/telegram/webhook)
-    ↓
-grammy parses the Telegram update
-    ↓
-Gemini 1.5 Flash  (text parse or vision OCR)
-    ↓
-Structured JSON  (merchant, amount, category, payer, split_method, …)
-    ↓
-Google Sheets  (append row via googleapis service account)
-    ↓
-Next.js dashboard reads  (/api/expenses → GET all rows)
+Telegram (image + caption)
+  → /api/telegram/webhook  (grammy, secret + chat-id guarded)
+  → lib/ai.ts              (provider-agnostic vision/OCR; default Gemini)
+  → lib/sheets.ts          (append to Google Sheets — source of truth)
+  → /api/expenses → /dashboard (components/Dashboard.tsx)
 ```
 
-**Alternative ingestion path:** `scripts/apps-script/webhook.gs` — a complete Google Apps Script
-implementation that does the same thing without a Vercel deployment.
+## Implemented
 
----
+- [x] `lib/types.ts` — Expense (17-field schema), ExtractedExpense, DashboardSummary
+- [x] `lib/ai.ts` — provider-agnostic `extractExpense()`; Gemini impl; keeps raw response; enforces needs_review
+- [x] `lib/sheets.ts` — ensureHeaders, appendExpense, getAllExpenses, isDuplicate, computeSummary
+- [x] `lib/categories.ts` — 餐飲 交通 購物 住宿 門票 其他 (+emoji, inferCategory helper)
+- [x] `lib/telegram.ts` — photo handler (primary), text handler, /start, dedup, allow-list
+- [x] `app/api/telegram/webhook/route.ts` — secret-verified webhook
+- [x] `app/api/expenses/route.ts` — transactions + summary; clear error on missing creds
+- [x] `components/Dashboard.tsx` — total / by-currency / by-category / needs-review / recent (expandable) + loading/empty/error
+- [x] `scripts/register-webhook.ts` — Telegram setWebhook
+- [x] README (full setup), docs/ai/DESIGN_TASTE_GUIDE.md
+- [x] typecheck + lint + build all pass
 
-## Implemented features (as of 2026-06-09)
+## Pending setup (needs your credentials)
 
-- [x] `lib/types.ts` — full schema types (payer, split_method, status, etc.)
-- [x] `lib/categories.ts` — 6 categories: 餐飲 交通 購物 住宿 門票 其他
-- [x] `lib/gemini.ts` — Gemini 1.5 Flash text + image extraction with JSON schema
-- [x] `lib/sheets.ts` — Google Sheets append + read + dedup + balance computation
-- [x] `lib/telegram.ts` — grammy bot: text handler, photo handler, /start command
-- [x] `app/api/telegram/webhook/route.ts` — webhook endpoint with secret verification
-- [x] `app/api/expenses/route.ts` — read expenses + balance for web UI
-- [x] `components/Dashboard.tsx` — client-side dashboard with filters + balance + category chips
-- [x] `app/dashboard/page.tsx` — server shell with Suspense skeleton
-- [x] `scripts/register-webhook.ts` — register Telegram webhook URL
-- [x] `scripts/apps-script/webhook.gs` — Apps Script alternative webhook
-- [x] `docs/ai/DESIGN_TASTE_GUIDE.md` — curated taste-skill guidance for this project
-- [x] Harness docs: CORE_RULES, CLAUDE.md, AGENTS.md, AI_PROJECT_CORE, HARNESS.md, DECISIONS.md
+1. Telegram bot via @BotFather → `TELEGRAM_BOT_TOKEN`
+2. Your chat id via @userinfobot → `TELEGRAM_ALLOWED_CHAT_IDS`
+3. AI key (Gemini) → `AI_PROVIDER_API_KEY` (+ `AI_MODEL`)
+4. Google Sheet with `expenses` tab → `GOOGLE_SHEETS_ID`
+5. GCP service account + share sheet → `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`
+6. `cp .env.local.example .env.local`, fill in
+7. Deploy / ngrok → `WEBHOOK_BASE_URL` → `npm run register-webhook`
 
----
+## Schema — Google Sheets tab `expenses` (A:Q)
 
-## Pending setup (you must do these)
-
-1. **Create a Telegram bot** via @BotFather → get `TELEGRAM_BOT_TOKEN`
-2. **Get your Telegram chat ID** via @userinfobot → set `TELEGRAM_ALLOWED_CHAT_IDS`
-3. **Get Gemini API key** at aistudio.google.com → set `GEMINI_API_KEY`
-4. **Create Google Sheet** with a tab named `expenses` → copy the Sheet ID
-5. **Create a GCP service account:**
-   - Enable Google Sheets API
-   - Create service account → download JSON key
-   - Share the Google Sheet with the service account email (Editor role)
-   - Set `GOOGLE_SERVICE_ACCOUNT_EMAIL` and `GOOGLE_PRIVATE_KEY`
-6. **Fill `.env.local`** from `.env.local.example`
-7. **Deploy to Vercel** OR run ngrok locally → set `WEBHOOK_BASE_URL`
-8. **Register webhook:** `npx tsx scripts/register-webhook.ts`
-
----
-
-## Google Sheets schema (tab: `expenses`)
-
-| Column | Field | Notes |
-|--------|-------|-------|
-| A | id | UUID |
-| B | created_at | ISO 8601 |
-| C | trip_id | `tokyo_2d1n_mvp` |
-| D | date | YYYY-MM-DD |
-| E | merchant | Store name |
-| F | item_name | What was bought |
-| G | amount | Numeric |
-| H | currency | JPY default |
-| I | category | 餐飲/交通/購物/住宿/門票/其他 |
-| J | payer | Aston / Amy |
-| K | split_method | 平分 / Aston only / Amy only |
-| L | source | telegram_text / telegram_photo / manual |
-| M | confidence | high / medium / low |
-| N | raw_text | Original message |
-| O | telegram_chat_id | |
-| P | telegram_message_id | Dedup key |
-| Q | telegram_file_id | For photos |
-| R | status | confirmed / needs_review |
-| S | notes | Gemini notes |
-
----
+id · created_at · source · telegram_message_id · transaction_date · merchant ·
+amount · currency · category · payment_method · location · original_text_context ·
+ai_summary · confidence_score · needs_review · image_file_reference · raw_ai_response
 
 ## Key decisions
 
-- **Gemini over Claude** for LLM: user preference; Gemini supports JSON schema output natively
-- **Google Sheets over SQLite**: portable, no DB setup, easy to inspect/edit manually
-- **Next.js webhook over Apps Script**: project already has the infra; Apps Script is documented as alternative
-- **grammy retained**: good TypeScript typing for Telegram updates, webhook-native
-- **No Supabase, no auth system, no itinerary**: MVP scope only
+- **Provider-agnostic AI** via `AI_PROVIDER_API_KEY` / `AI_MODEL`; swap by editing `lib/ai.ts` only
+- **Google Sheets** as single source of truth (no DB, no Supabase)
+- **needs_review enforced in code** (`lib/ai.ts normalize`) — low-confidence rows are written, never dropped
+- **Image not stored** — only Telegram `file_id` kept as `image_file_reference`
+- **Apps Script alternative removed** in this respec (it carried the old split schema)
 
----
-
-## taste-skill integration
-
-- **No CLI install** — would add repo noise
-- **Relevant content extracted to** `docs/ai/DESIGN_TASTE_GUIDE.md`
-- Referenced in `AGENTS.md` and `CLAUDE.md` for UI tasks
-- Applied to: off-white background, tabular-nums for amounts, dark balance card, category chips, empty state design
-
----
-
-## Secrets / env vars required (no values here)
+## Env vars required (names only)
 
 ```
 TELEGRAM_BOT_TOKEN
 TELEGRAM_WEBHOOK_SECRET
 TELEGRAM_ALLOWED_CHAT_IDS
-GEMINI_API_KEY
-GOOGLE_SHEET_ID
+AI_PROVIDER_API_KEY
+AI_MODEL
+GOOGLE_SHEETS_ID
 GOOGLE_SERVICE_ACCOUNT_EMAIL
 GOOGLE_PRIVATE_KEY
 WEBHOOK_BASE_URL

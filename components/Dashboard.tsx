@@ -1,101 +1,102 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { Expense, BalanceSummary, ExpenseCategory, Payer, ALL_CATEGORIES } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Expense,
+  DashboardSummary,
+  ExpenseCategory,
+  ALL_CATEGORIES,
+} from "@/lib/types";
 import { getCategoryEmoji } from "@/lib/categories";
 
-interface ApiResponse {
-  expenses: Expense[];
-  balance: BalanceSummary;
-  error?: string;
+interface ApiData {
+  transactions: Expense[];
+  summary: DashboardSummary;
 }
 
-type FilterPayer = Payer | "全部";
-type SortKey = "date_desc" | "amount_desc";
-
-function fmt(n: number) {
-  return `¥${Math.round(n).toLocaleString("ja-JP")}`;
+function money(amount: number, currency: string): string {
+  const noDecimals = currency === "JPY" || currency === "KRW";
+  const n = noDecimals
+    ? Math.round(amount).toLocaleString()
+    : amount.toLocaleString(undefined, { minimumFractionDigits: 2 });
+  return `${n} ${currency}`;
 }
 
-function StatusBadge({ status, confidence }: { status: Expense["status"]; confidence: Expense["confidence"] }) {
-  if (status === "needs_review" || confidence === "low") {
-    return (
-      <span className="inline-block w-1 self-stretch bg-amber-400 rounded-full mr-2 shrink-0" />
-    );
+/* ── State chip ──────────────────────────────────────────────────────────── */
+
+function SourceState({
+  loading,
+  error,
+  count,
+}: {
+  loading: boolean;
+  error: string | null;
+  count: number;
+}) {
+  let dot = "bg-amber-400 animate-pulse";
+  let label = "連線 Google Sheets…";
+  if (error) {
+    dot = "bg-red-400";
+    label = "資料來源錯誤";
+  } else if (!loading) {
+    dot = "bg-emerald-400";
+    label = `已連線 · ${count} 筆`;
   }
-  return null;
-}
-
-function PayerTag({ payer }: { payer: Payer }) {
-  const colors =
-    payer === "Aston"
-      ? "bg-blue-50 text-blue-700"
-      : "bg-pink-50 text-pink-700";
   return (
-    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${colors} tabular-nums`}>
-      {payer}
-    </span>
+    <div className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+      <span className={`inline-block w-1.5 h-1.5 rounded-full ${dot}`} />
+      {label}
+    </div>
   );
 }
 
-function SplitTag({ method }: { method: Expense["split_method"] }) {
-  if (method === "平分") return null;
-  return (
-    <span className="text-[10px] text-[var(--muted)] bg-[var(--surface-2)] px-1.5 py-0.5 rounded">
-      {method}
-    </span>
+/* ── Hero: total spend ───────────────────────────────────────────────────── */
+
+function TotalSpend({ summary }: { summary: DashboardSummary }) {
+  const currencies = Object.keys(summary.total_by_currency);
+  const extraCurrencies = currencies.filter(
+    (c) => c !== summary.primary_currency
   );
-}
-
-function BalanceCard({ balance }: { balance: BalanceSummary }) {
-  const net = balance.net_balance;
-  const owesText =
-    net > 0.5
-      ? `Amy 應付 Aston ${fmt(net)}`
-      : net < -0.5
-      ? `Aston 應付 Amy ${fmt(Math.abs(net))}`
-      : "目前結清 ✓";
-
-  const isSettled = Math.abs(net) < 0.5;
-
   return (
-    <section className="bg-[var(--foreground)] text-white rounded-2xl p-5 mb-4">
-      <p className="text-xs text-white/50 mb-1 tracking-wide uppercase">結算</p>
-      <p className={`text-xl font-semibold mb-4 ${isSettled ? "text-emerald-400" : "text-white"}`}>
-        {owesText}
+    <section className="bg-[var(--foreground)] text-white rounded-3xl p-6 mb-4">
+      <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
+        總支出
       </p>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-white/10 rounded-xl p-3">
-          <p className="text-[10px] text-white/50 mb-1">Aston 付</p>
-          <p className="text-base font-semibold tabular-nums">{fmt(balance.aston_total_paid)}</p>
-        </div>
-        <div className="bg-white/10 rounded-xl p-3">
-          <p className="text-[10px] text-white/50 mb-1">Amy 付</p>
-          <p className="text-base font-semibold tabular-nums">{fmt(balance.amy_total_paid)}</p>
-        </div>
+      <p className="text-4xl font-bold tabular-nums tracking-tight">
+        {money(summary.total_primary, summary.primary_currency)}
+      </p>
+      <div className="flex items-center justify-between mt-4 text-xs text-white/60">
+        <span>{summary.count} 筆交易</span>
+        {extraCurrencies.length > 0 && (
+          <span>+{extraCurrencies.length} 種其他幣別</span>
+        )}
       </div>
     </section>
   );
 }
 
-function CategoryRow({ balance }: { balance: BalanceSummary }) {
-  const cats = (ALL_CATEGORIES as ExpenseCategory[]).filter(
-    (c) => balance.by_category[c]?.count > 0
-  );
-  if (cats.length === 0) return null;
+/* ── Spend by currency ───────────────────────────────────────────────────── */
 
+function ByCurrency({ summary }: { summary: DashboardSummary }) {
+  const entries = Object.entries(summary.total_by_currency).sort(
+    (a, b) => b[1] - a[1]
+  );
+  if (entries.length <= 1) return null;
   return (
     <section className="mb-4">
-      <p className="text-xs text-[var(--muted)] font-medium mb-2 tracking-wide uppercase">分類</p>
-      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {cats.map((cat) => (
+      <h2 className="text-[11px] uppercase tracking-widest text-[var(--muted)] mb-2">
+        各幣別
+      </h2>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {entries.map(([cur, total]) => (
           <div
-            key={cat}
-            className="shrink-0 bg-[var(--surface)] rounded-xl px-3 py-2.5 border border-[var(--border)]"
+            key={cur}
+            className="shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3"
           >
-            <p className="text-base leading-none mb-1">{getCategoryEmoji(cat)}</p>
-            <p className="text-[11px] text-[var(--muted)]">{cat}</p>
-            <p className="text-sm font-semibold tabular-nums">{fmt(balance.by_category[cat].total)}</p>
+            <p className="text-xs text-[var(--muted)]">{cur}</p>
+            <p className="text-base font-semibold tabular-nums">
+              {money(total, cur)}
+            </p>
           </div>
         ))}
       </div>
@@ -103,214 +104,236 @@ function CategoryRow({ balance }: { balance: BalanceSummary }) {
   );
 }
 
-function ExpenseRow({ expense }: { expense: Expense }) {
+/* ── Spend by category ───────────────────────────────────────────────────── */
+
+function ByCategory({ summary }: { summary: DashboardSummary }) {
+  const cats = (ALL_CATEGORIES as ExpenseCategory[]).filter(
+    (c) => summary.by_category[c]?.count > 0
+  );
+  if (cats.length === 0) return null;
+  const max = Math.max(...cats.map((c) => summary.by_category[c].total), 1);
   return (
-    <div className="flex items-start gap-2 py-3 border-b border-[var(--border)] last:border-0">
-      <StatusBadge status={expense.status} confidence={expense.confidence} />
-      <div className="text-lg leading-none pt-0.5 w-6 shrink-0 text-center">
-        {getCategoryEmoji(expense.category)}
+    <section className="mb-4">
+      <h2 className="text-[11px] uppercase tracking-widest text-[var(--muted)] mb-2">
+        分類（{summary.primary_currency} 估算）
+      </h2>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
+        {cats.map((c) => {
+          const d = summary.by_category[c];
+          return (
+            <div key={c}>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="flex items-center gap-1.5">
+                  <span>{getCategoryEmoji(c)}</span>
+                  <span className="text-[var(--foreground)]">{c}</span>
+                  <span className="text-[var(--muted)] text-xs">
+                    {d.count}
+                  </span>
+                </span>
+                <span className="font-medium tabular-nums">
+                  {money(d.total, summary.primary_currency)}
+                </span>
+              </div>
+              <div className="h-1.5 bg-[var(--surface-2)] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[var(--accent)] rounded-full"
+                  style={{ width: `${(d.total / max) * 100}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-[var(--foreground)] truncate leading-snug">
-          {expense.item_name || expense.merchant}
-        </p>
-        {expense.item_name && expense.merchant && expense.item_name !== expense.merchant && (
-          <p className="text-xs text-[var(--muted)] truncate">{expense.merchant}</p>
-        )}
-        <div className="flex gap-1.5 mt-1 flex-wrap">
-          <PayerTag payer={expense.payer} />
-          <SplitTag method={expense.split_method} />
-          {expense.date && (
-            <span className="text-[10px] text-[var(--muted)]">{expense.date}</span>
+    </section>
+  );
+}
+
+/* ── Transaction card (expandable) ───────────────────────────────────────── */
+
+function TxCard({ e }: { e: Expense }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={`rounded-2xl border transition-colors ${
+        e.needs_review
+          ? "border-amber-200 bg-amber-50/40"
+          : "border-[var(--border)] bg-[var(--surface)]"
+      }`}
+    >
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-3 p-3.5 text-left active:scale-[0.99] transition-transform"
+      >
+        <span className="text-xl w-7 text-center shrink-0">
+          {getCategoryEmoji(e.category)}
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium truncate">{e.merchant}</p>
+          <p className="text-xs text-[var(--muted)] truncate">
+            {e.transaction_date || e.created_at.slice(0, 10)}
+            {e.location ? ` · ${e.location}` : ""}
+            {e.payment_method ? ` · ${e.payment_method}` : ""}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-sm font-semibold tabular-nums">
+            {money(e.amount, e.currency)}
+          </p>
+          {e.needs_review && (
+            <p className="text-[10px] text-amber-600 font-medium">需確認</p>
           )}
         </div>
+      </button>
+
+      {open && (
+        <div className="px-3.5 pb-3.5 pt-0 text-xs text-[var(--muted)] space-y-1.5 border-t border-[var(--border)] mt-0">
+          <p className="pt-3 text-[var(--foreground)]">{e.ai_summary}</p>
+          {e.original_text_context && (
+            <p>
+              <span className="text-[var(--muted)]">原始文字：</span>
+              {e.original_text_context}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
+            <span>分類：{e.category}</span>
+            <span>來源：{e.source === "telegram_photo" ? "照片" : "文字"}</span>
+            <span>信心度：{(e.confidence_score * 100).toFixed(0)}%</span>
+            {e.image_file_reference && <span>含圖片</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Needs review ────────────────────────────────────────────────────────── */
+
+function NeedsReview({ items }: { items: Expense[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="mb-4">
+      <h2 className="text-[11px] uppercase tracking-widest text-amber-600 mb-2">
+        待確認 · {items.length}
+      </h2>
+      <div className="space-y-2">
+        {items.map((e) => (
+          <TxCard key={e.id} e={e} />
+        ))}
       </div>
-      <div className="text-right shrink-0 ml-2">
-        <p className="text-sm font-semibold tabular-nums">{fmt(expense.amount)}</p>
-        {expense.currency !== "JPY" && (
-          <p className="text-[10px] text-[var(--muted)]">{expense.currency}</p>
-        )}
-      </div>
+    </section>
+  );
+}
+
+/* ── States ──────────────────────────────────────────────────────────────── */
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="bg-red-50 border border-red-100 rounded-2xl p-4">
+      <p className="text-sm font-medium text-red-700 mb-1">無法載入資料</p>
+      <p className="text-xs text-red-600 mb-2">{message}</p>
+      <p className="text-xs text-red-500">
+        請確認 Google Sheets 環境變數已設定（見 README）。
+      </p>
     </div>
   );
 }
 
 function EmptyState() {
   return (
-    <div className="py-16 text-center">
-      <p className="text-3xl mb-3">📲</p>
-      <p className="text-sm font-medium text-[var(--foreground)] mb-1">還沒有記錄</p>
-      <p className="text-xs text-[var(--muted)] max-w-52 mx-auto leading-relaxed">
-        傳送消費訊息給 Telegram Bot 開始記帳
+    <div className="py-14 text-center">
+      <p className="text-3xl mb-3">🧾</p>
+      <p className="text-sm font-medium mb-1">還沒有任何記錄</p>
+      <p className="text-xs text-[var(--muted)] max-w-56 mx-auto leading-relaxed">
+        用 Telegram 傳一張收據或付款截圖，AI 會自動辨識並寫入。
       </p>
-      <div className="mt-4 bg-[var(--surface)] rounded-xl p-4 text-left max-w-64 mx-auto border border-[var(--border)]">
-        <p className="text-[11px] text-[var(--muted)] mb-2">範例格式</p>
-        <p className="text-xs font-mono text-[var(--foreground)]">晚餐 2800 Amy付 餐飲</p>
-        <p className="text-xs font-mono text-[var(--foreground)]">電車 1200 交通</p>
-        <p className="text-xs font-mono text-[var(--foreground)]">ドンキ購物 5400</p>
-      </div>
     </div>
   );
 }
 
+/* ── Root ────────────────────────────────────────────────────────────────── */
+
 export default function Dashboard() {
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [data, setData] = useState<ApiData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [filterPayer, setFilterPayer] = useState<FilterPayer>("全部");
-  const [filterCategory, setFilterCategory] = useState<ExpenseCategory | "全部">("全部");
-  const [sort, setSort] = useState<SortKey>("date_desc");
 
   useEffect(() => {
     fetch("/api/expenses")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) setError(d.error);
-        else setData(d);
+      .then(async (r) => {
+        const json = await r.json();
+        if (!r.ok || json.error) throw new Error(json.error || "讀取失敗");
+        return json as ApiData;
       })
-      .catch(() => setError("無法連線到資料來源"))
+      .then(setData)
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
 
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    let list = [...data.expenses];
-    if (filterPayer !== "全部") list = list.filter((e) => e.payer === filterPayer);
-    if (filterCategory !== "全部") list = list.filter((e) => e.category === filterCategory);
-    if (sort === "date_desc") list.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    else list.sort((a, b) => b.amount - a.amount);
-    return list;
-  }, [data, filterPayer, filterCategory, sort]);
-
-  const activeCategories = useMemo(
-    () =>
-      data
-        ? (ALL_CATEGORIES as ExpenseCategory[]).filter(
-            (c) => data.balance.by_category[c]?.count > 0
-          )
-        : [],
+  const reviewItems = useMemo(
+    () => data?.transactions.filter((t) => t.needs_review) ?? [],
+    [data]
+  );
+  const confirmedItems = useMemo(
+    () => data?.transactions.filter((t) => !t.needs_review) ?? [],
     [data]
   );
 
   return (
-    <div className="min-h-dvh bg-[var(--background)]">
-      <div className="max-w-md mx-auto px-4 pb-10">
-        {/* Header */}
-        <header className="pt-10 pb-6">
-          <h1 className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
-            東京記帳 MVP
-          </h1>
-          <p className="text-xs text-[var(--muted)] mt-0.5">Telegram 自動記帳測試</p>
-        </header>
-
-        {/* Data source state */}
-        {loading && (
-          <p className="text-xs text-[var(--muted)] mb-4 flex items-center gap-1.5">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            載入中…
-          </p>
-        )}
-        {error && (
-          <div className="mb-4 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl">
-            <p className="text-xs text-red-700">連線失敗：{error}</p>
-          </div>
-        )}
-        {!loading && !error && data && (
-          <p className="text-xs text-[var(--muted)] mb-4 flex items-center gap-1.5">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            {data.balance.count} 筆記錄
-          </p>
-        )}
-
-        {/* Balance */}
-        {data && <BalanceCard balance={data.balance} />}
-
-        {/* Total */}
-        {data && data.balance.count > 0 && (
-          <div className="flex items-baseline justify-between mb-4">
-            <p className="text-xs text-[var(--muted)] uppercase tracking-wide font-medium">總消費</p>
-            <p className="text-2xl font-bold tabular-nums tracking-tight">
-              {fmt(data.balance.total_spend)}
+    <main className="min-h-dvh bg-[var(--background)]">
+      <div className="max-w-md mx-auto px-4 pb-12">
+        <header className="pt-10 pb-5 flex items-end justify-between">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">東京記帳 MVP</h1>
+            <p className="text-xs text-[var(--muted)] mt-0.5">
+              Telegram 自動記帳測試
             </p>
           </div>
+          <SourceState
+            loading={loading}
+            error={error}
+            count={data?.summary.count ?? 0}
+          />
+        </header>
+
+        {loading && (
+          <div className="space-y-4">
+            <div className="h-32 bg-[var(--surface)] rounded-3xl animate-pulse" />
+            <div className="h-24 bg-[var(--surface)] rounded-2xl animate-pulse" />
+            <div className="h-40 bg-[var(--surface)] rounded-2xl animate-pulse" />
+          </div>
         )}
 
-        {/* Categories */}
-        {data && <CategoryRow balance={data.balance} />}
+        {!loading && error && <ErrorState message={error} />}
 
-        {/* Filters */}
-        {data && data.balance.count > 0 && (
-          <section className="mb-4">
-            <div className="flex gap-2 flex-wrap">
-              {/* Payer filter */}
-              {(["全部", "Aston", "Amy"] as FilterPayer[]).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setFilterPayer(p)}
-                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                    filterPayer === p
-                      ? "bg-[var(--foreground)] text-white border-[var(--foreground)]"
-                      : "bg-[var(--surface)] border-[var(--border)] text-[var(--muted)]"
-                  }`}
-                >
-                  {p}
-                </button>
-              ))}
-              <div className="w-px bg-[var(--border)] mx-1" />
-              {(["全部", ...activeCategories] as (ExpenseCategory | "全部")[]).map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setFilterCategory(c)}
-                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                    filterCategory === c
-                      ? "bg-[var(--foreground)] text-white border-[var(--foreground)]"
-                      : "bg-[var(--surface)] border-[var(--border)] text-[var(--muted)]"
-                  }`}
-                >
-                  {c === "全部" ? "全部" : `${getCategoryEmoji(c)} ${c}`}
-                </button>
-              ))}
-            </div>
-
-            {/* Sort */}
-            <div className="flex gap-2 mt-2">
-              <button
-                onClick={() => setSort("date_desc")}
-                className={`text-[11px] px-2.5 py-1 rounded-lg transition-colors ${
-                  sort === "date_desc"
-                    ? "bg-[var(--surface-2)] text-[var(--foreground)] font-medium"
-                    : "text-[var(--muted)]"
-                }`}
-              >
-                最新優先
-              </button>
-              <button
-                onClick={() => setSort("amount_desc")}
-                className={`text-[11px] px-2.5 py-1 rounded-lg transition-colors ${
-                  sort === "amount_desc"
-                    ? "bg-[var(--surface-2)] text-[var(--foreground)] font-medium"
-                    : "text-[var(--muted)]"
-                }`}
-              >
-                金額排序
-              </button>
-            </div>
-          </section>
+        {!loading && !error && data && data.summary.count === 0 && (
+          <EmptyState />
         )}
 
-        {/* Expense list */}
-        {!loading && data && (
-          <section className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-4">
-            {filtered.length === 0 && data.balance.count > 0 ? (
-              <p className="py-8 text-center text-sm text-[var(--muted)]">沒有符合的記錄</p>
-            ) : filtered.length === 0 ? (
-              <EmptyState />
-            ) : (
-              filtered.map((e) => <ExpenseRow key={e.id} expense={e} />)
-            )}
-          </section>
+        {!loading && !error && data && data.summary.count > 0 && (
+          <>
+            <TotalSpend summary={data.summary} />
+            <ByCurrency summary={data.summary} />
+            <ByCategory summary={data.summary} />
+            <NeedsReview items={reviewItems} />
+
+            <section>
+              <h2 className="text-[11px] uppercase tracking-widest text-[var(--muted)] mb-2">
+                最近交易
+              </h2>
+              <div className="space-y-2">
+                {confirmedItems.map((e) => (
+                  <TxCard key={e.id} e={e} />
+                ))}
+                {confirmedItems.length === 0 && (
+                  <p className="text-xs text-[var(--muted)] text-center py-4">
+                    目前所有記錄都在待確認區。
+                  </p>
+                )}
+              </div>
+            </section>
+          </>
         )}
       </div>
-    </div>
+    </main>
   );
 }

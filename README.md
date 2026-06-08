@@ -1,36 +1,164 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 東京記帳 MVP — Tokyo Solo Expense Capture
 
-## Getting Started
+Send a Telegram photo (receipt / payment screenshot / paper invoice) with optional
+text context → AI vision extracts the expense → a row is written to Google Sheets →
+a mobile-first web dashboard reads it back.
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Telegram (image + caption)
+        │
+        ▼
+/api/telegram/webhook  (grammy)
+        │
+        ▼
+lib/ai.ts   AI vision / OCR → structured expense JSON
+        │
+        ▼
+lib/sheets.ts  → append row to Google Sheets (source of truth)
+        │
+        ▼
+/dashboard  reads /api/expenses → mobile dashboard
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+This is a deliberately small MVP. See [Known limitations](#known-mvp-limitations).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Stack
 
-## Learn More
+| Layer | Tech |
+|-------|------|
+| App | Next.js 16 (App Router), TypeScript, Tailwind v4 |
+| Bot | grammy webhook |
+| AI | Provider-agnostic (`lib/ai.ts`); default Google Gemini vision |
+| Storage | Google Sheets via service account |
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 1. Create the Telegram bot
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Open Telegram, message **@BotFather** → `/newbot` → follow prompts.
+2. Copy the **bot token** → `TELEGRAM_BOT_TOKEN`.
+3. Message **@userinfobot** to get your numeric chat id → `TELEGRAM_ALLOWED_CHAT_IDS`
+   (comma-separated; leave blank to allow everyone — not recommended).
+4. Pick any random string for `TELEGRAM_WEBHOOK_SECRET` (used to verify webhook calls).
 
-## Deploy on Vercel
+## 2. Set the webhook
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The app exposes `POST /api/telegram/webhook`. After deploying (or starting ngrok):
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+# Fill .env.local first (see below), set WEBHOOK_BASE_URL to your public URL, then:
+npm run register-webhook
+```
+
+This calls Telegram's `setWebhook` with your URL + secret. The script also prints
+the current webhook info so you can confirm it registered.
+
+Local testing without deploying:
+
+```bash
+npm run dev                 # terminal 1
+npx ngrok http 3000         # terminal 2 → copy the https URL into WEBHOOK_BASE_URL
+npm run register-webhook
+```
+
+## 3. Configure Google Sheets
+
+1. Create a Google Sheet. Note the id from the URL:
+   `https://docs.google.com/spreadsheets/d/`**`<GOOGLE_SHEETS_ID>`**`/edit`
+2. Add a tab named exactly **`expenses`** (the app creates the header row on first write).
+3. In [Google Cloud Console](https://console.cloud.google.com/):
+   - Enable the **Google Sheets API**.
+   - Create a **service account** → create a **JSON key** → download it.
+   - Copy `client_email` → `GOOGLE_SERVICE_ACCOUNT_EMAIL`.
+   - Copy `private_key` → `GOOGLE_PRIVATE_KEY` (keep the `\n` escapes).
+4. **Share the Sheet** with the service account email, **Editor** access.
+
+## 4. Configure environment variables
+
+```bash
+cp .env.local.example .env.local
+# then fill in every value
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot auth |
+| `TELEGRAM_WEBHOOK_SECRET` | Verifies inbound webhook requests |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | Allow-list of chat ids (blank = all) |
+| `AI_PROVIDER_API_KEY` | AI provider key (Gemini by default) |
+| `AI_MODEL` | Vision model id (default `gemini-1.5-flash`) |
+| `GOOGLE_SHEETS_ID` | Target spreadsheet |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Service account identity |
+| `GOOGLE_PRIVATE_KEY` | Service account key (`\n`-escaped) |
+| `WEBHOOK_BASE_URL` | Public URL for webhook registration |
+
+## 5. Run locally
+
+```bash
+npm install
+npm run dev          # http://localhost:3000 → redirects to /dashboard
+```
+
+The dashboard reads from Google Sheets via `/api/expenses`. With credentials unset
+it shows a clear error state rather than crashing.
+
+## 6. Deploy
+
+Deploy to **Vercel** (recommended — webhook needs a public HTTPS URL):
+
+1. Import the repo in Vercel.
+2. Add every variable from the table above in **Project → Settings → Environment Variables**.
+3. Deploy, set `WEBHOOK_BASE_URL` to the production URL, run `npm run register-webhook`.
+
+---
+
+## Google Sheets schema (tab: `expenses`, columns A:Q)
+
+| Col | Field | Notes |
+|-----|-------|-------|
+| A | `id` | UUID |
+| B | `created_at` | ISO 8601 (server time) |
+| C | `source` | `telegram_photo` / `telegram_text` |
+| D | `telegram_message_id` | Dedup key |
+| E | `transaction_date` | YYYY-MM-DD |
+| F | `merchant` | |
+| G | `amount` | Number |
+| H | `currency` | Default JPY |
+| I | `category` | 餐飲 / 交通 / 購物 / 住宿 / 門票 / 其他 |
+| J | `payment_method` | e.g. 信用卡 / 現金 / IC卡 |
+| K | `location` | e.g. Shibuya |
+| L | `original_text_context` | The user's caption/text, verbatim |
+| M | `ai_summary` | One-line AI description |
+| N | `confidence_score` | 0–1 |
+| O | `needs_review` | `TRUE` / `FALSE` |
+| P | `image_file_reference` | Telegram `file_id` (image not stored) |
+| Q | `raw_ai_response` | Raw model output, for auditing |
+
+`needs_review` is set `TRUE` when amount/currency/merchant are uncertain or
+confidence is below the threshold in `lib/types.ts`. Low-confidence rows are still
+written — never silently dropped — and surfaced in the dashboard's **待確認** section.
+
+---
+
+## Verification
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```
+
+---
+
+## Known MVP limitations
+
+- **Single user.** No login; access is gated only by `TELEGRAM_ALLOWED_CHAT_IDS`.
+- **Reads all rows per request.** Fine for a short trip; not paginated.
+- **Mixed-currency category totals** are shown in the primary (most-used) currency
+  only — the per-currency section is the accurate multi-currency view.
+- **No edit/delete in the UI** yet (planned — see `ROADMAP.md`). Correct mistakes
+  directly in the Sheet.
+- **Image is not stored** — only a Telegram `file_id` reference is kept.
+- **One expense per message.** No multi-line receipts split into items.

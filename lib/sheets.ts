@@ -1,72 +1,122 @@
 import { google } from "googleapis";
 import { v4 as uuidv4 } from "uuid";
-import { Expense, ExtractedExpense, BalanceSummary, TRIP_ID, ALL_CATEGORIES, ExpenseCategory, ExpenseSource } from "./types";
+import {
+  Expense,
+  ExtractedExpense,
+  ExpenseSource,
+  DashboardSummary,
+  ExpenseCategory,
+  ALL_CATEGORIES,
+} from "./types";
 
-const SHEET_RANGE = "expenses!A:S";
+const SHEET_TAB = "expenses";
+const SHEET_RANGE = `${SHEET_TAB}!A:Q`;
+
+/** Column order — must match Expense field order and the documented schema. */
 const HEADER_ROW = [
-  "id", "created_at", "trip_id", "date", "merchant", "item_name",
-  "amount", "currency", "category", "payer", "split_method",
-  "source", "confidence", "raw_text", "telegram_chat_id",
-  "telegram_message_id", "telegram_file_id", "status", "notes",
+  "id",
+  "created_at",
+  "source",
+  "telegram_message_id",
+  "transaction_date",
+  "merchant",
+  "amount",
+  "currency",
+  "category",
+  "payment_method",
+  "location",
+  "original_text_context",
+  "ai_summary",
+  "confidence_score",
+  "needs_review",
+  "image_file_reference",
+  "raw_ai_response",
 ];
 
+/**
+ * Throws a clear, actionable error when Sheets credentials are missing.
+ */
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const key = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n");
-  if (!email || !key) throw new Error("Google service account credentials not set");
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY;
+  if (!email || !rawKey) {
+    throw new Error(
+      "Google Sheets credentials missing. Set GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY."
+    );
+  }
   return new google.auth.JWT({
     email,
-    key,
+    key: rawKey.replace(/\\n/g, "\n"),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 }
 
-function getSheetId() {
-  const id = process.env.GOOGLE_SHEET_ID;
-  if (!id) throw new Error("GOOGLE_SHEET_ID is not set");
+function getSheetId(): string {
+  const id = process.env.GOOGLE_SHEETS_ID;
+  if (!id) throw new Error("GOOGLE_SHEETS_ID is not set");
   return id;
 }
 
+function sheetsClient() {
+  return google.sheets({ version: "v4", auth: getAuth() });
+}
+
+function expenseToRow(e: Expense): (string | number)[] {
+  return [
+    e.id,
+    e.created_at,
+    e.source,
+    e.telegram_message_id,
+    e.transaction_date,
+    e.merchant,
+    e.amount,
+    e.currency,
+    e.category,
+    e.payment_method,
+    e.location,
+    e.original_text_context,
+    e.ai_summary,
+    e.confidence_score,
+    e.needs_review ? "TRUE" : "FALSE",
+    e.image_file_reference,
+    e.raw_ai_response,
+  ];
+}
+
 function rowToExpense(row: string[]): Expense | null {
-  if (!row[0] || row[0] === "id") return null; // skip header or empty
+  if (!row[0] || row[0] === "id") return null;
   return {
     id: row[0] || "",
     created_at: row[1] || "",
-    trip_id: row[2] || TRIP_ID,
-    date: row[3] || "",
-    merchant: row[4] || "",
-    item_name: row[5] || "",
+    source: (row[2] as ExpenseSource) || "telegram_text",
+    telegram_message_id: row[3] || "",
+    transaction_date: row[4] || "",
+    merchant: row[5] || "",
     amount: parseFloat(row[6]) || 0,
     currency: row[7] || "JPY",
     category: (row[8] as ExpenseCategory) || "其他",
-    payer: (row[9] as Expense["payer"]) || "Aston",
-    split_method: (row[10] as Expense["split_method"]) || "平分",
-    source: (row[11] as ExpenseSource) || "telegram_text",
-    confidence: (row[12] as Expense["confidence"]) || "high",
-    raw_text: row[13] || "",
-    telegram_chat_id: row[14] || "",
-    telegram_message_id: row[15] || "",
-    telegram_file_id: row[16] || "",
-    status: (row[17] as Expense["status"]) || "confirmed",
-    notes: row[18] || "",
+    payment_method: row[9] || "",
+    location: row[10] || "",
+    original_text_context: row[11] || "",
+    ai_summary: row[12] || "",
+    confidence_score: parseFloat(row[13]) || 0,
+    needs_review: String(row[14]).toUpperCase() === "TRUE",
+    image_file_reference: row[15] || "",
+    raw_ai_response: row[16] || "",
   };
 }
 
 export async function ensureHeaders(): Promise<void> {
-  const auth = getAuth();
-  const sheets = google.sheets({ version: "v4", auth });
+  const sheets = sheetsClient();
   const sheetId = getSheetId();
-
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "expenses!A1:A1",
+    range: `${SHEET_TAB}!A1:A1`,
   });
-
-  const firstCell = res.data.values?.[0]?.[0];
-  if (firstCell !== "id") {
+  if (res.data.values?.[0]?.[0] !== "id") {
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: "expenses!A1",
+      range: `${SHEET_TAB}!A1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADER_ROW] },
     });
@@ -76,139 +126,92 @@ export async function ensureHeaders(): Promise<void> {
 export async function appendExpense(params: {
   extracted: ExtractedExpense;
   source: ExpenseSource;
-  raw_text: string;
-  telegram_chat_id: string;
   telegram_message_id: string;
-  telegram_file_id: string;
+  original_text_context: string;
+  image_file_reference: string;
+  raw_ai_response: string;
 }): Promise<Expense> {
-  const { extracted, source, raw_text, telegram_chat_id, telegram_message_id, telegram_file_id } = params;
-
   const now = new Date().toISOString();
-  const today = now.slice(0, 10);
-
   const expense: Expense = {
     id: uuidv4(),
     created_at: now,
-    trip_id: TRIP_ID,
-    date: extracted.date || today,
-    merchant: extracted.merchant,
-    item_name: extracted.item_name,
-    amount: extracted.amount,
-    currency: extracted.currency,
-    category: extracted.category,
-    payer: extracted.payer,
-    split_method: extracted.split_method,
-    source,
-    confidence: extracted.confidence,
-    raw_text,
-    telegram_chat_id,
-    telegram_message_id,
-    telegram_file_id,
-    status: extracted.confidence === "low" ? "needs_review" : "confirmed",
-    notes: extracted.notes,
+    source: params.source,
+    telegram_message_id: params.telegram_message_id,
+    transaction_date: params.extracted.transaction_date || now.slice(0, 10),
+    merchant: params.extracted.merchant,
+    amount: params.extracted.amount,
+    currency: params.extracted.currency,
+    category: params.extracted.category,
+    payment_method: params.extracted.payment_method,
+    location: params.extracted.location,
+    original_text_context: params.original_text_context,
+    ai_summary: params.extracted.ai_summary,
+    confidence_score: params.extracted.confidence_score,
+    needs_review: params.extracted.needs_review,
+    image_file_reference: params.image_file_reference,
+    raw_ai_response: params.raw_ai_response,
   };
 
-  const auth = getAuth();
-  const sheets = google.sheets({ version: "v4", auth });
-
-  await sheets.spreadsheets.values.append({
+  await sheetsClient().spreadsheets.values.append({
     spreadsheetId: getSheetId(),
-    range: "expenses!A:S",
+    range: SHEET_RANGE,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[
-        expense.id,
-        expense.created_at,
-        expense.trip_id,
-        expense.date,
-        expense.merchant,
-        expense.item_name,
-        expense.amount,
-        expense.currency,
-        expense.category,
-        expense.payer,
-        expense.split_method,
-        expense.source,
-        expense.confidence,
-        expense.raw_text,
-        expense.telegram_chat_id,
-        expense.telegram_message_id,
-        expense.telegram_file_id,
-        expense.status,
-        expense.notes,
-      ]],
-    },
+    requestBody: { values: [expenseToRow(expense)] },
   });
 
   return expense;
 }
 
 export async function getAllExpenses(): Promise<Expense[]> {
-  const auth = getAuth();
-  const sheets = google.sheets({ version: "v4", auth });
-
-  const res = await sheets.spreadsheets.values.get({
+  const res = await sheetsClient().spreadsheets.values.get({
     spreadsheetId: getSheetId(),
     range: SHEET_RANGE,
   });
-
-  const rows = res.data.values || [];
-  return rows
-    .slice(1) // skip header
-    .map(rowToExpense)
+  return (res.data.values || [])
+    .slice(1)
+    .map((r) => rowToExpense(r as string[]))
     .filter((e): e is Expense => e !== null);
 }
 
 export async function isDuplicate(
-  telegram_chat_id: string,
   telegram_message_id: string
 ): Promise<boolean> {
-  const expenses = await getAllExpenses();
-  return expenses.some(
-    (e) =>
-      e.telegram_chat_id === telegram_chat_id &&
-      e.telegram_message_id === telegram_message_id
-  );
+  if (!telegram_message_id) return false;
+  const all = await getAllExpenses();
+  return all.some((e) => e.telegram_message_id === telegram_message_id);
 }
 
-export function computeBalance(expenses: Expense[]): BalanceSummary {
-  let aston_total_paid = 0;
-  let amy_total_paid = 0;
-  let net_balance = 0; // positive = Amy owes Aston, negative = Aston owes Amy
-
+export function computeSummary(expenses: Expense[]): DashboardSummary {
+  const total_by_currency: Record<string, number> = {};
+  const currencyCounts: Record<string, number> = {};
   const by_category = Object.fromEntries(
-    ALL_CATEGORIES.map((cat) => [cat, { total: 0, count: 0 }])
-  ) as BalanceSummary["by_category"];
+    ALL_CATEGORIES.map((c) => [c, { total: 0, count: 0 }])
+  ) as DashboardSummary["by_category"];
+
+  let needs_review_count = 0;
 
   for (const e of expenses) {
-    const amt = e.amount;
-    const cat = e.category as ExpenseCategory;
-
-    if (by_category[cat]) {
-      by_category[cat].total += amt;
-      by_category[cat].count += 1;
+    total_by_currency[e.currency] =
+      (total_by_currency[e.currency] || 0) + e.amount;
+    currencyCounts[e.currency] = (currencyCounts[e.currency] || 0) + 1;
+    if (by_category[e.category]) {
+      by_category[e.category].total += e.amount;
+      by_category[e.category].count += 1;
     }
-
-    if (e.payer === "Aston") {
-      aston_total_paid += amt;
-      if (e.split_method === "平分") net_balance += amt / 2;
-      else if (e.split_method === "Amy only") net_balance += amt;
-      // Aston only: no balance effect
-    } else {
-      amy_total_paid += amt;
-      if (e.split_method === "平分") net_balance -= amt / 2;
-      else if (e.split_method === "Aston only") net_balance -= amt;
-      // Amy only: no balance effect
-    }
+    if (e.needs_review) needs_review_count += 1;
   }
 
+  // Primary currency = the one used in the most transactions (JPY-dominant trips).
+  const primary_currency =
+    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "JPY";
+
   return {
-    aston_total_paid,
-    amy_total_paid,
-    net_balance,
-    total_spend: aston_total_paid + amy_total_paid,
-    count: expenses.length,
+    total_by_currency,
     by_category,
+    primary_currency,
+    total_primary: total_by_currency[primary_currency] || 0,
+    count: expenses.length,
+    needs_review_count,
   };
 }

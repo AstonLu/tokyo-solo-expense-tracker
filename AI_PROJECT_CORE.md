@@ -1,114 +1,67 @@
-# AI Project Core — Tokyo Solo Expense Tracker
+# AI Project Core — Tokyo Solo Expense Capture
 
-## Project Purpose
+## Purpose
 
-MVP to validate a **Telegram-based expense tracking workflow** during a 2-day 1-night solo Tokyo trip.
-Goal: confirm this pipeline works before integrating it into a larger travel app.
+A mobile-first **solo** travel expense capture MVP. Validate the vertical slice:
+Telegram image + text → AI OCR/vision → Google Sheets → mobile dashboard.
 
-**This is not a full travel app.** No itinerary, weather, shopping lists, or multi-trip management.
+**Not** a full travel app. No login, no multi-user, no accounting engine, no Supabase,
+no multi-trip management.
 
----
-
-## Core Flow
+## Core flow
 
 ```
-Telegram message (text or photo)
-    ↓
-grammy webhook handler  (Next.js /api/telegram/webhook)
-    ↓
-Gemini 1.5 Flash  →  structured JSON extraction
-    ↓
-Google Sheets  →  append row (via service account)
-    ↓
-Next.js website  →  reads /api/expenses  →  displays dashboard
+Telegram photo (+ optional caption)        ← primary input
+        │   (plain text note also accepted ← secondary)
+        ▼
+/api/telegram/webhook  (grammy; verifies secret + allow-listed chat id)
+        ▼
+lib/ai.ts  extractExpense()  → structured JSON + raw response
+        ▼
+lib/sheets.ts  appendExpense()  → Google Sheets row (source of truth)
+        ▼
+/api/expenses  →  components/Dashboard.tsx
 ```
 
-**Alternative ingestion:** `scripts/apps-script/webhook.gs` — Apps Script webhook,
-useful for testing without Vercel deployment.
+## Extracted fields (AI)
 
----
+`transaction_date, merchant, amount, currency, category, payment_method, location,
+ai_summary, confidence_score, needs_review`
+
+Plus from Telegram, not the model: `original_text_context` (caption/text),
+`image_file_reference` (file_id), and `raw_ai_response` (audit).
 
 ## Domain rules
 
-### Travelers
-- **Aston** — default payer
-- **Amy** — co-traveler
-
-### Expense fields
-| Field | Default | Options |
-|-------|---------|---------|
-| `payer` | Aston | Aston / Amy |
-| `split_method` | 平分 | 平分 / Aston only / Amy only |
-| `currency` | JPY | any |
-| `status` | confirmed | confirmed / needs_review |
-
-### Categories
-| Key | Label | Examples |
-|-----|-------|---------|
-| 餐飲 | 餐飲 | Restaurant, konbini, cafe |
-| 交通 | 交通 | Train, taxi, IC card |
-| 購物 | 購物 | Donki, Yodobashi, souvenirs |
-| 住宿 | 住宿 | Hotel |
-| 門票 | 門票 | Museum, shrine entry |
-| 其他 | 其他 | Anything else |
-
-### Balance logic
-```
-net_balance = 0  (positive = Amy owes Aston, negative = Aston owes Amy)
-
-Aston paid + 平分      → net_balance += amount / 2
-Aston paid + Amy only  → net_balance += amount
-Aston paid + Aston only → no effect
-
-Amy paid + 平分        → net_balance -= amount / 2
-Amy paid + Aston only  → net_balance -= amount
-Amy paid + Amy only    → no effect
-```
-
-### Deduplication
-- Use `telegram_chat_id` + `telegram_message_id` as dedup key
-- Check before processing every update
-
-### Confidence and status
-- `confidence: low` → `status: needs_review`
-- UI shows amber left border for needs_review rows
-
----
+- Default currency **JPY**.
+- `category` ∈ { 餐飲, 交通, 購物, 住宿, 門票, 其他 }.
+- **needs_review = TRUE** when amount/currency/merchant uncertain or confidence
+  < `CONFIDENCE_REVIEW_THRESHOLD` (`lib/types.ts`). Enforced in `lib/ai.ts`, not trusted
+  blindly from the model.
+- Low-confidence rows are **still written** — never silently dropped.
+- Dedup on `telegram_message_id`.
+- Image bytes are **not stored** — only the `file_id` reference.
 
 ## Tech stack
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | Next.js 15, App Router, TypeScript |
-| Styling | Tailwind CSS v4, Geist font |
-| Telegram | grammy |
-| AI/LLM | Gemini 1.5 Flash (`@google/generative-ai`) |
-| Storage | Google Sheets (`googleapis` service account) |
-| Trip ID | `tokyo_2d1n_mvp` |
-
----
+Next.js 16 (App Router, TS) · Tailwind v4 · grammy · provider-agnostic AI
+(`lib/ai.ts`, default Gemini vision) · Google Sheets (`googleapis` service account).
 
 ## Scope guards
 
-- No Supabase, no full auth, no cloud DB
-- No itinerary, weather, or multi-trip features
-- No receipt image storage — only extracted structured data
-- No complex Telegram conversation state for MVP
-- Text input is priority; photo OCR is bonus
-
----
+- No login / multi-user / Supabase / desktop-first / voice / multi-trip.
+- Keep `lib/ai.ts` as the only place that imports an AI SDK (swappable seam).
+- Google Sheets is the single source of truth — don't add a parallel store.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `lib/types.ts` | All TypeScript types |
-| `lib/categories.ts` | Category meta + inferCategory() |
-| `lib/gemini.ts` | Gemini text + image extraction |
-| `lib/sheets.ts` | Sheets read/write/dedup/balance |
-| `lib/telegram.ts` | grammy bot handlers |
+| `lib/types.ts` | Schema types, category list, review threshold |
+| `lib/ai.ts` | Provider-agnostic vision/OCR extraction |
+| `lib/sheets.ts` | Sheets read/write/dedup/summary |
+| `lib/telegram.ts` | grammy handlers (photo primary, text secondary) |
 | `app/api/telegram/webhook/route.ts` | Webhook endpoint |
-| `app/api/expenses/route.ts` | Read expenses for UI |
-| `components/Dashboard.tsx` | Main dashboard component |
-| `scripts/register-webhook.ts` | Register Telegram webhook |
-| `scripts/apps-script/webhook.gs` | Apps Script alternative |
+| `app/api/expenses/route.ts` | Dashboard data API |
+| `components/Dashboard.tsx` | Mobile dashboard |
+| `scripts/register-webhook.ts` | Telegram setWebhook |

@@ -6,58 +6,61 @@ export type ExpenseCategory =
   | "門票"
   | "其他";
 
-export type Payer = "Aston" | "Amy";
-export type SplitMethod = "平分" | "Aston only" | "Amy only";
-export type Confidence = "high" | "medium" | "low";
-export type ExpenseStatus = "confirmed" | "needs_review";
-export type ExpenseSource = "telegram_text" | "telegram_photo" | "manual";
+export type ExpenseSource = "telegram_photo" | "telegram_text";
 
+/**
+ * A single expense record. Mirrors the Google Sheets column order (A:Q).
+ */
 export interface Expense {
   id: string;
   created_at: string;
-  trip_id: string;
-  date: string;
-  merchant: string;
-  item_name: string;
-  amount: number;
-  currency: string;
-  category: ExpenseCategory;
-  payer: Payer;
-  split_method: SplitMethod;
   source: ExpenseSource;
-  confidence: Confidence;
-  raw_text: string;
-  telegram_chat_id: string;
   telegram_message_id: string;
-  telegram_file_id: string;
-  status: ExpenseStatus;
-  notes: string;
-}
-
-export interface ExtractedExpense {
+  transaction_date: string;
   merchant: string;
-  item_name: string;
   amount: number;
   currency: string;
   category: ExpenseCategory;
-  payer: Payer;
-  split_method: SplitMethod;
-  confidence: Confidence;
-  date: string | null;
-  notes: string;
+  payment_method: string;
+  location: string;
+  original_text_context: string;
+  ai_summary: string;
+  confidence_score: number;
+  needs_review: boolean;
+  image_file_reference: string;
+  raw_ai_response: string;
 }
 
-export interface BalanceSummary {
-  aston_total_paid: number;
-  amy_total_paid: number;
-  // positive = Amy owes Aston; negative = Aston owes Amy
-  net_balance: number;
-  total_spend: number;
-  count: number;
+/**
+ * Structured fields produced by the AI vision/OCR layer.
+ * `original_text_context` and `image_file_reference` come from Telegram, not the model.
+ */
+export interface ExtractedExpense {
+  transaction_date: string | null;
+  merchant: string;
+  amount: number;
+  currency: string;
+  category: ExpenseCategory;
+  payment_method: string;
+  location: string;
+  ai_summary: string;
+  confidence_score: number;
+  needs_review: boolean;
+}
+
+export interface DashboardSummary {
+  total_by_currency: Record<string, number>;
   by_category: Record<ExpenseCategory, { total: number; count: number }>;
+  primary_currency: string;
+  total_primary: number;
+  count: number;
+  needs_review_count: number;
 }
 
-export const TRIP_ID = "tokyo_2d1n_mvp";
+export interface ExpensesApiResponse {
+  transactions: Expense[];
+  summary: DashboardSummary;
+}
 
 export const ALL_CATEGORIES: ExpenseCategory[] = [
   "餐飲",
@@ -67,3 +70,6 @@ export const ALL_CATEGORIES: ExpenseCategory[] = [
   "門票",
   "其他",
 ];
+
+/** Below this confidence the record is flagged for manual review. */
+export const CONFIDENCE_REVIEW_THRESHOLD = 0.6;

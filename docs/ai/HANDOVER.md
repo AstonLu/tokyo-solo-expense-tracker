@@ -1,43 +1,34 @@
 # Session Handover
 
-## Last updated: 2026-06-09 (MVP rebuild session)
+## Last updated: 2026-06-09 (respec: solo OCR-first capture)
 
 ## Current state
 
-Architecture rebuilt. All code compiles. Awaiting real credentials for end-to-end test.
+Full vertical slice built and passing typecheck + lint + build. Awaiting real
+credentials for an end-to-end run. Not deployed.
 
-## What's done
+## What changed this session
 
-- [x] Architecture pivoted: Claude/SQLite → Gemini/Google Sheets
-- [x] `lib/types.ts` — new schema with payer, split_method, status, etc.
-- [x] `lib/categories.ts` — 6 categories: 餐飲 交通 購物 住宿 門票 其他
-- [x] `lib/gemini.ts` — Gemini 1.5 Flash text + image extraction
-- [x] `lib/sheets.ts` — Google Sheets CRUD + dedup + balance computation
-- [x] `lib/telegram.ts` — text handler + photo handler + /start
-- [x] `app/api/telegram/webhook/route.ts` — secure webhook
-- [x] `app/api/expenses/route.ts` — read API for dashboard
-- [x] `components/Dashboard.tsx` — mobile-first dashboard, filters, balance card
-- [x] `app/dashboard/page.tsx` + skeleton
-- [x] `scripts/register-webhook.ts` — webhook registration
-- [x] `scripts/apps-script/webhook.gs` — Apps Script alternative (complete)
-- [x] `docs/ai/DESIGN_TASTE_GUIDE.md` — taste-skill guidance
-- [x] `MEMORY.md`, `ROADMAP.md`, `AGENTS.md`, `CLAUDE.md`, `AI_PROJECT_CORE.md` — all updated
-- [x] `npm run typecheck` passes
+- Pivoted from Aston/Amy **split** tracker → **single-user OCR-first** capture
+- New 17-field schema (see `MEMORY.md` / `README.md`)
+- New provider-agnostic AI layer `lib/ai.ts` (`AI_PROVIDER_API_KEY` / `AI_MODEL`)
+- Image-first Telegram handling; text is secondary
+- Dashboard rebuilt: total / by-currency / by-category / needs-review / recent (expandable)
+- Removed `lib/gemini.ts` and the stale `scripts/apps-script/webhook.gs`
+- Env renamed: `GEMINI_API_KEY`→`AI_PROVIDER_API_KEY`(+`AI_MODEL`), `GOOGLE_SHEET_ID`→`GOOGLE_SHEETS_ID`
 
 ## What's next
 
-- [ ] Fill in `.env.local` from `.env.local.example`
-- [ ] Create Google Sheet with `expenses` tab
-- [ ] Set up GCP service account + share sheet
-- [ ] Run `npm run dev` for local development
-- [ ] Use ngrok for Telegram webhook testing locally
-- [ ] `npx tsx scripts/register-webhook.ts` to register
-- [ ] End-to-end test: send a text message to the bot
-- [ ] End-to-end test: send a receipt photo
+- [ ] Fill `.env.local` (see `README.md` §4)
+- [ ] Create Sheet + `expenses` tab + share with service account
+- [ ] `npm run dev` + ngrok → `npm run register-webhook`
+- [ ] Send a real receipt photo; confirm a row lands + dashboard shows it
 - [ ] Deploy to Vercel
 
-## Known limitations
+## Watch-outs
 
-- `lib/gemini.ts` uses a type cast `as any` for `responseSchema` due to the Google SDK's union type constraint — this is intentional and safe at runtime
-- Google Sheets reads all rows on every API call — fine for an MVP trip, not for scale
-- No pagination in the dashboard — fine for ~50 expenses
+- `lib/ai.ts` uses one `as any` for Gemini `parts` array — intentional, safe.
+- `GOOGLE_PRIVATE_KEY` newlines must be literal `\n` in `.env.local`.
+- Mixed-currency **category** totals display in the primary currency only; the
+  by-currency section is the accurate multi-currency view.
+- If reintroducing split/payer, it must be an explicit request — the respec removed it.

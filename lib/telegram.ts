@@ -1,5 +1,5 @@
 import { Bot, webhookCallback } from "grammy";
-import { extractFromText, extractFromImage } from "./gemini";
+import { extractExpense } from "./ai";
 import { appendExpense, isDuplicate, ensureHeaders } from "./sheets";
 import { getCategoryEmoji } from "./categories";
 import { Expense } from "./types";
@@ -7,8 +7,12 @@ import { Expense } from "./types";
 let bot: Bot | null = null;
 
 function getAllowedChatIds(): Set<string> {
-  const raw = process.env.TELEGRAM_ALLOWED_CHAT_IDS || "";
-  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+  return new Set(
+    (process.env.TELEGRAM_ALLOWED_CHAT_IDS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
 }
 
 function getBot(): Bot {
@@ -21,145 +25,146 @@ function getBot(): Bot {
   return bot;
 }
 
-function formatConfirmation(expense: Expense): string {
-  const emoji = getCategoryEmoji(expense.category);
-  const reviewNote = expense.status === "needs_review" ? "\n⚠️ 信心度較低，請稍後確認" : "";
-  return [
-    `✅ 已記帳`,
-    ``,
-    `${emoji} ${expense.item_name}`,
-    `🏪 ${expense.merchant}`,
-    `💴 ¥${Math.round(expense.amount).toLocaleString()} ${expense.currency !== "JPY" ? `(${expense.currency})` : ""}`.trim(),
-    `👤 ${expense.payer} 付 · ${expense.split_method}`,
-    `📂 ${expense.category}`,
-    reviewNote,
-  ].filter((l) => l !== undefined).join("\n").trim();
+function confirmation(e: Expense): string {
+  const emoji = getCategoryEmoji(e.category);
+  const lines = [
+    e.needs_review ? "⚠️ 已記錄（需要確認）" : "✅ 已記錄",
+    "",
+    `🏪 ${e.merchant}`,
+    `💴 ${e.amount.toLocaleString()} ${e.currency}`,
+    `${emoji} ${e.category}${e.payment_method ? ` · ${e.payment_method}` : ""}`,
+  ];
+  if (e.location) lines.push(`📍 ${e.location}`);
+  if (e.transaction_date) lines.push(`🗓 ${e.transaction_date}`);
+  lines.push("", `📝 ${e.ai_summary}`);
+  if (e.needs_review) {
+    lines.push("", `🔍 信心度 ${(e.confidence_score * 100).toFixed(0)}% — 請到儀表板確認金額/幣別/商家`);
+  }
+  return lines.join("\n");
+}
+
+async function downloadPhotoBase64(
+  fileId: string,
+  api: Bot["api"]
+): Promise<string> {
+  const file = await api.getFile(fileId);
+  const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const res = await fetch(url);
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
 }
 
 function registerHandlers(bot: Bot) {
-  const allowedIds = getAllowedChatIds();
-
-  function isAllowed(chatId: number): boolean {
-    if (allowedIds.size === 0) return true; // no restriction if not configured
-    return allowedIds.has(String(chatId));
-  }
+  const allowed = getAllowedChatIds();
+  const isAllowed = (chatId: number) =>
+    allowed.size === 0 || allowed.has(String(chatId));
 
   bot.command("start", (ctx) => {
     if (!isAllowed(ctx.chat.id)) return;
     ctx.reply(
       [
-        "👋 東京記帳 Bot 已啟動",
+        "👋 旅行記帳 Bot",
         "",
-        "📝 傳送消費訊息：",
-        "  晚餐 2800 日圓 Amy付 餐飲",
-        "  便利商店飲料 350",
-        "  電車 1200 交通",
+        "📸 傳一張收據 / 付款截圖 / 紙本發票照片",
+        "可加上說明，例如「澀谷午餐，刷卡」",
         "",
-        "📸 或直接傳收據/截圖",
+        "📝 也可純文字：晚餐 2800 日圓 信用卡",
         "",
-        "格式：品項 金額 [Amy付] [分類]",
-        "預設：Aston付、平分、JPY",
+        "我會用 AI 辨識並寫入 Google Sheets。",
       ].join("\n")
     );
   });
 
-  bot.on("message:text", async (ctx) => {
-    const text = ctx.message.text;
-    if (text.startsWith("/")) return;
+  // Primary path: image (with optional caption as context).
+  bot.on("message:photo", async (ctx) => {
     if (!isAllowed(ctx.chat.id)) return;
-
-    const chatId = String(ctx.chat.id);
     const msgId = String(ctx.message.message_id);
 
-    if (await isDuplicate(chatId, msgId)) {
-      await ctx.reply("⚠️ 此訊息已記錄過");
+    if (await isDuplicate(msgId)) {
+      await ctx.reply("⚠️ 這則訊息已記錄過了");
       return;
     }
 
-    const processingMsg = await ctx.reply("⏳ 解析中…");
-
+    const pending = await ctx.reply("⏳ 辨識中…");
     try {
+      const photos = ctx.message.photo;
+      const best = photos[photos.length - 1];
+      const base64 = await downloadPhotoBase64(best.file_id, ctx.api);
+      const caption = ctx.message.caption || "";
+
+      const { extracted, raw } = await extractExpense({
+        imageBase64: base64,
+        mimeType: "image/jpeg",
+        textContext: caption,
+      });
+
       await ensureHeaders();
-      const extracted = await extractFromText(text);
       const expense = await appendExpense({
         extracted,
-        source: "telegram_text",
-        raw_text: text,
-        telegram_chat_id: chatId,
+        source: "telegram_photo",
         telegram_message_id: msgId,
-        telegram_file_id: "",
+        original_text_context: caption,
+        image_file_reference: best.file_id,
+        raw_ai_response: raw,
       });
 
       await ctx.api.editMessageText(
         ctx.chat.id,
-        processingMsg.message_id,
-        formatConfirmation(expense)
+        pending.message_id,
+        confirmation(expense)
       );
     } catch (err) {
-      console.error("Text extraction error:", err);
+      console.error("Photo handler error:", err);
       await ctx.api.editMessageText(
         ctx.chat.id,
-        processingMsg.message_id,
-        "❌ 解析失敗，請確認格式：品項 金額 [Amy付] [分類]"
+        pending.message_id,
+        "❌ 辨識或寫入失敗，請稍後再試或改用文字輸入。"
       );
     }
   });
 
-  bot.on("message:photo", async (ctx) => {
+  // Secondary path: plain text note.
+  bot.on("message:text", async (ctx) => {
+    const text = ctx.message.text;
+    if (text.startsWith("/")) return;
     if (!isAllowed(ctx.chat.id)) return;
-
-    const chatId = String(ctx.chat.id);
     const msgId = String(ctx.message.message_id);
 
-    if (await isDuplicate(chatId, msgId)) {
-      await ctx.reply("⚠️ 此訊息已記錄過");
+    if (await isDuplicate(msgId)) {
+      await ctx.reply("⚠️ 這則訊息已記錄過了");
       return;
     }
 
-    const processingMsg = await ctx.reply("⏳ 辨識收據中…");
-
+    const pending = await ctx.reply("⏳ 解析中…");
     try {
-      const photos = ctx.message.photo;
-      const best = photos[photos.length - 1];
-      const file = await ctx.api.getFile(best.file_id);
-      const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-
-      const response = await fetch(fileUrl);
-      const buffer = await response.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString("base64");
+      const { extracted, raw } = await extractExpense({ textContext: text });
 
       await ensureHeaders();
-      const extracted = await extractFromImage(
-        base64,
-        "image/jpeg",
-        ctx.message.caption
-      );
       const expense = await appendExpense({
         extracted,
-        source: "telegram_photo",
-        raw_text: ctx.message.caption || "",
-        telegram_chat_id: chatId,
+        source: "telegram_text",
         telegram_message_id: msgId,
-        telegram_file_id: best.file_id,
+        original_text_context: text,
+        image_file_reference: "",
+        raw_ai_response: raw,
       });
 
       await ctx.api.editMessageText(
         ctx.chat.id,
-        processingMsg.message_id,
-        formatConfirmation(expense)
+        pending.message_id,
+        confirmation(expense)
       );
     } catch (err) {
-      console.error("Photo extraction error:", err);
+      console.error("Text handler error:", err);
       await ctx.api.editMessageText(
         ctx.chat.id,
-        processingMsg.message_id,
-        "❌ 辨識失敗，請重試或改用文字輸入"
+        pending.message_id,
+        "❌ 解析或寫入失敗，請稍後再試。"
       );
     }
   });
 }
 
 export function createWebhookHandler() {
-  const b = getBot();
-  return webhookCallback(b, "std/http");
+  return webhookCallback(getBot(), "std/http");
 }

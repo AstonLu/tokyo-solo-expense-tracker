@@ -34,16 +34,19 @@
 - Never log full update payloads (contain user data)
 - Re-register webhook after any URL change: `npx tsx scripts/register-webhook.ts`
 
-### Gemini extraction
-- Use `gemini-1.5-flash` (supports vision + JSON schema output)
-- Always normalize extracted fields before writing to Sheets (see `normalizeExtracted()` in `lib/gemini.ts`)
-- Low confidence → set `status: needs_review`
+### AI extraction
+- All AI calls go through `lib/ai.ts` `extractExpense()` — the only provider seam.
+  Config: `AI_PROVIDER_API_KEY` + `AI_MODEL` (default `gemini-1.5-flash`, vision-capable).
+- `normalize()` enforces `needs_review` (amount ≤ 0 / no merchant / low confidence).
+- Never drop a record — low confidence is written and flagged.
+- To swap providers, edit only `callModel()` in `lib/ai.ts`.
 
 ### Google Sheets
-- Dedup check before every write: `telegram_chat_id` + `telegram_message_id`
+- Dedup check before every write: `telegram_message_id`
 - Call `ensureHeaders()` before first write per cold start
-- Credentials: `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` in env
+- Credentials: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`
 - `GOOGLE_PRIVATE_KEY`: newlines must be `\n` literals in `.env.local`
+- Sheet is the single source of truth — no parallel store
 
 ### Environment
 - `.env.local` is gitignored — never commit it
@@ -66,14 +69,13 @@ git diff --check       # Whitespace check
 
 | File | Purpose |
 |------|---------|
-| `lib/gemini.ts` | Gemini extraction (text + image) |
-| `lib/sheets.ts` | Google Sheets read/write/dedup/balance |
-| `lib/telegram.ts` | grammy bot + message handlers |
-| `lib/types.ts` | All shared types |
-| `lib/categories.ts` | Category config + inferCategory() |
+| `lib/ai.ts` | Provider-agnostic vision/OCR extraction |
+| `lib/sheets.ts` | Google Sheets read/write/dedup/summary |
+| `lib/telegram.ts` | grammy bot + message handlers (photo primary) |
+| `lib/types.ts` | All shared types + schema |
+| `lib/categories.ts` | Category config + helpers |
 | `app/api/telegram/webhook/route.ts` | Webhook endpoint |
 | `app/api/expenses/route.ts` | Expenses read API for dashboard |
-| `components/Dashboard.tsx` | Client-side dashboard with filters |
+| `components/Dashboard.tsx` | Mobile dashboard (expandable cards) |
 | `scripts/register-webhook.ts` | Register Telegram webhook URL |
-| `scripts/apps-script/webhook.gs` | Apps Script alternative webhook |
 | `docs/ai/DESIGN_TASTE_GUIDE.md` | UI design guidance (taste-skill) |
