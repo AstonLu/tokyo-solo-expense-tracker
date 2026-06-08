@@ -30,7 +30,7 @@ This is a deliberately small MVP. See [Known limitations](#known-mvp-limitations
 |-------|------|
 | App | Next.js 16 (App Router), TypeScript, Tailwind v4 |
 | Bot | grammy webhook |
-| AI | Provider-agnostic (`lib/ai.ts`); default Google Gemini vision |
+| AI | Provider-agnostic (`lib/ai.ts`); default Groq vision (free tier) |
 | Storage | Google Sheets via service account |
 
 ---
@@ -87,8 +87,8 @@ cp .env.local.example .env.local
 | `TELEGRAM_BOT_TOKEN` | Bot auth |
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies inbound webhook requests |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Allow-list of chat ids (blank = all) |
-| `AI_PROVIDER_API_KEY` | AI provider key (Gemini by default) |
-| `AI_MODEL` | Vision model id (default `gemini-1.5-flash`) |
+| `GROQ_API_KEY` | Groq API key (free at console.groq.com/keys) |
+| `AI_MODEL` | Vision model id (default `llama-3.2-11b-vision-preview`) |
 | `GOOGLE_SHEETS_ID` | Target spreadsheet |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Service account identity |
 | `GOOGLE_PRIVATE_KEY` | Service account key (`\n`-escaped) |

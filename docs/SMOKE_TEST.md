@@ -87,8 +87,8 @@ Walk the pipeline, each step gates the next:
 | `TELEGRAM_BOT_TOKEN` | @BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | you choose (random string) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | @userinfobot (your numeric id) |
-| `AI_PROVIDER_API_KEY` | aistudio.google.com/app/apikey |
-| `AI_MODEL` | `gemini-1.5-flash` (default is fine) |
+| `GROQ_API_KEY` | console.groq.com/keys (free tier) |
+| `AI_MODEL` | `llama-3.2-11b-vision-preview` (default is fine) |
 | `GOOGLE_SHEETS_ID` | Sheet URL |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | service-account JSON `client_email` |
 | `GOOGLE_PRIVATE_KEY` | service-account JSON `private_key` (`\n`-escaped) |

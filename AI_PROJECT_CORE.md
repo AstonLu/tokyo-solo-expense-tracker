@@ -45,7 +45,7 @@ Plus from Telegram, not the model: `original_text_context` (caption/text),
 ## Tech stack
 
 Next.js 16 (App Router, TS) · Tailwind v4 · grammy · provider-agnostic AI
-(`lib/ai.ts`, default Gemini vision) · Google Sheets (`googleapis` service account).
+(`lib/ai.ts`, default Groq vision, free tier) · Google Sheets (`googleapis` service account).
 
 ## Scope guards
 

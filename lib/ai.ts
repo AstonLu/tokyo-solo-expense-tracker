@@ -5,10 +5,10 @@
  * provider SDK directly. To swap providers later, replace the body of
  * `callModel()` — the input/output contract stays the same.
  *
- * Current implementation: Google Gemini (vision-capable), configured via
- * AI_PROVIDER_API_KEY and AI_MODEL.
+ * Current implementation: Groq (vision-capable), configured via
+ * GROQ_API_KEY (or AI_PROVIDER_API_KEY) and AI_MODEL.
  */
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Groq from "groq-sdk";
 import {
   ExtractedExpense,
   ExpenseCategory,
@@ -47,29 +47,27 @@ Rules:
 Return ONLY a JSON object with keys:
 transaction_date, merchant, amount, currency, category, payment_method, location, ai_summary, confidence_score, needs_review`;
 
-function getModel() {
-  const apiKey = process.env.AI_PROVIDER_API_KEY;
-  if (!apiKey) throw new Error("AI_PROVIDER_API_KEY is not set");
-  const modelName = process.env.AI_MODEL || "gemini-1.5-flash";
-  const client = new GoogleGenerativeAI(apiKey);
-  return client.getGenerativeModel({
-    model: modelName,
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: { responseMimeType: "application/json" },
-  });
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+function getClient(): Groq {
+  const apiKey = process.env.GROQ_API_KEY || process.env.AI_PROVIDER_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY is not set");
+  return new Groq({ apiKey });
 }
 
 async function callModel(input: ExtractionInput): Promise<string> {
-  const model = getModel();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const parts: any[] = [];
+  const client = getClient();
+  const model = process.env.AI_MODEL || "llama-3.2-11b-vision-preview";
+
+  const userContent: ContentPart[] = [];
 
   if (input.imageBase64) {
-    parts.push({
-      inlineData: {
-        mimeType: input.mimeType || "image/jpeg",
-        data: input.imageBase64,
-      },
+    const mimeType = input.mimeType || "image/jpeg";
+    userContent.push({
+      type: "image_url",
+      image_url: { url: `data:${mimeType};base64,${input.imageBase64}` },
     });
   }
 
@@ -79,10 +77,19 @@ async function callModel(input: ExtractionInput): Promise<string> {
   const context = input.textContext
     ? `\nUser context: ${input.textContext}`
     : "";
-  parts.push({ text: instruction + context });
+  userContent.push({ type: "text", text: instruction + context });
 
-  const result = await model.generateContent(parts);
-  return result.response.text();
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userContent },
+    ],
+    max_tokens: 1024,
+    temperature: 0.1,
+  });
+
+  return response.choices[0]?.message?.content ?? "{}";
 }
 
 export async function extractExpense(

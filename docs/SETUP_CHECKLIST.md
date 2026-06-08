@@ -62,11 +62,11 @@ Full reference: [`README.md`](../README.md). Variable names: [`.env.local.exampl
 ✅ The service account appears in the Sheet's people list with Editor access.
 (Skipping this is the #1 cause of `The caller does not have permission` errors.)
 
-## 7. AI provider key (Gemini default)
+## 7. AI provider key (Groq — free tier)
 
-1. Open [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → create an API key.
-2. Set `AI_PROVIDER_API_KEY` to it.
-3. Set `AI_MODEL=gemini-1.5-flash` (any vision-capable model id works).
+1. Open [console.groq.com/keys](https://console.groq.com/keys) → create an API key.
+2. Set `GROQ_API_KEY` to it.
+3. Set `AI_MODEL=llama-3.2-11b-vision-preview` (any Groq vision-capable model id works).
 
 ✅ Key is set; model id is vision-capable.
 
@@ -133,8 +133,8 @@ in the Sheet and on `/dashboard`.
 | `TELEGRAM_BOT_TOKEN` | @BotFather | 1 |
 | `TELEGRAM_WEBHOOK_SECRET` | you choose | 2 |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | @userinfobot | 2 |
-| `AI_PROVIDER_API_KEY` | AI Studio | 7 |
-| `AI_MODEL` | `gemini-1.5-flash` | 7 |
+| `GROQ_API_KEY` | console.groq.com/keys | 7 |
+| `AI_MODEL` | `llama-3.2-11b-vision-preview` | 7 |
 | `GOOGLE_SHEETS_ID` | Sheet URL | 3 |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | service account JSON | 4 |
 | `GOOGLE_PRIVATE_KEY` | service account JSON | 4 |
