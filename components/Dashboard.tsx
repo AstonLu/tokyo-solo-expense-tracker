@@ -14,6 +14,35 @@ interface ApiData {
   summary: DashboardSummary;
 }
 
+/** Recompute summary client-side after a local delete. */
+function computeSummaryClient(transactions: Expense[]): DashboardSummary {
+  const total_by_currency: Record<string, number> = {};
+  const currencyCounts: Record<string, number> = {};
+  const by_category = Object.fromEntries(
+    ALL_CATEGORIES.map((c) => [c, { total: 0, count: 0 }])
+  ) as DashboardSummary["by_category"];
+  let needs_review_count = 0;
+  for (const e of transactions) {
+    total_by_currency[e.currency] = (total_by_currency[e.currency] || 0) + e.amount;
+    currencyCounts[e.currency] = (currencyCounts[e.currency] || 0) + 1;
+    if (by_category[e.category]) {
+      by_category[e.category].total += e.amount;
+      by_category[e.category].count += 1;
+    }
+    if (e.needs_review) needs_review_count += 1;
+  }
+  const primary_currency =
+    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "JPY";
+  return {
+    total_by_currency,
+    by_category,
+    primary_currency,
+    total_primary: total_by_currency[primary_currency] || 0,
+    count: transactions.length,
+    needs_review_count,
+  };
+}
+
 function money(amount: number, currency: string): string {
   const noDecimals = currency === "JPY" || currency === "KRW";
   const n = noDecimals
@@ -148,14 +177,46 @@ function ByCategory({ summary }: { summary: DashboardSummary }) {
   );
 }
 
-/* ── Transaction card (expandable) ───────────────────────────────────────── */
+/* ── Transaction card (expandable + deleteable) ──────────────────────────── */
 
-function TxCard({ e }: { e: Expense }) {
+type DeleteState = "idle" | "confirm" | "deleting" | "deleted" | "error";
+
+function TxCard({
+  e,
+  onDeleted,
+}: {
+  e: Expense;
+  onDeleted: (id: string) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [del, setDel] = useState<DeleteState>("idle");
+  const [delErr, setDelErr] = useState("");
+
+  async function handleDelete() {
+    setDel("deleting");
+    try {
+      const res = await fetch(
+        `/api/expenses?id=${encodeURIComponent(e.id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const j = await res.json();
+        throw new Error(j.error || "刪除失敗");
+      }
+      setDel("deleted");
+      setTimeout(() => onDeleted(e.id), 400);
+    } catch (err) {
+      setDelErr(err instanceof Error ? err.message : "刪除失敗");
+      setDel("error");
+    }
+  }
+
   return (
     <div
-      className={`rounded-2xl border transition-colors ${
-        e.needs_review
+      className={`rounded-2xl border transition-all ${
+        del === "deleted"
+          ? "opacity-0 scale-95"
+          : e.needs_review
           ? "border-amber-200 bg-amber-50/40"
           : "border-[var(--border)] bg-[var(--surface)]"
       }`}
@@ -200,6 +261,40 @@ function TxCard({ e }: { e: Expense }) {
             <span>信心度：{(e.confidence_score * 100).toFixed(0)}%</span>
             {e.image_file_reference && <span>含圖片</span>}
           </div>
+
+          {/* Delete control */}
+          <div className="pt-2 border-t border-[var(--border)] mt-1 flex items-center gap-3">
+            {del === "idle" && (
+              <button
+                onClick={() => setDel("confirm")}
+                className="text-xs text-[var(--muted)] hover:text-red-500 transition-colors"
+              >
+                刪除此筆
+              </button>
+            )}
+            {del === "confirm" && (
+              <>
+                <button
+                  onClick={handleDelete}
+                  className="text-xs font-medium text-red-600 hover:text-red-700 transition-colors"
+                >
+                  確認刪除
+                </button>
+                <button
+                  onClick={() => setDel("idle")}
+                  className="text-xs text-[var(--muted)]"
+                >
+                  取消
+                </button>
+              </>
+            )}
+            {del === "deleting" && (
+              <p className="text-xs text-[var(--muted)]">刪除中…</p>
+            )}
+            {del === "error" && (
+              <p className="text-xs text-red-500">{delErr}</p>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -208,7 +303,13 @@ function TxCard({ e }: { e: Expense }) {
 
 /* ── Needs review ────────────────────────────────────────────────────────── */
 
-function NeedsReview({ items }: { items: Expense[] }) {
+function NeedsReview({
+  items,
+  onDeleted,
+}: {
+  items: Expense[];
+  onDeleted: (id: string) => void;
+}) {
   if (items.length === 0) return null;
   return (
     <section className="mb-4">
@@ -217,7 +318,7 @@ function NeedsReview({ items }: { items: Expense[] }) {
       </h2>
       <div className="space-y-2">
         {items.map((e) => (
-          <TxCard key={e.id} e={e} />
+          <TxCard key={e.id} e={e} onDeleted={onDeleted} />
         ))}
       </div>
     </section>
@@ -269,6 +370,15 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Remove a transaction from local state immediately after deletion
+  const handleDeleted = (id: string) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      const transactions = prev.transactions.filter((t) => t.id !== id);
+      return { transactions, summary: computeSummaryClient(transactions) };
+    });
+  };
+
   const reviewItems = useMemo(
     () => data?.transactions.filter((t) => t.needs_review) ?? [],
     [data]
@@ -314,7 +424,7 @@ export default function Dashboard() {
             <TotalSpend summary={data.summary} />
             <ByCurrency summary={data.summary} />
             <ByCategory summary={data.summary} />
-            <NeedsReview items={reviewItems} />
+            <NeedsReview items={reviewItems} onDeleted={handleDeleted} />
 
             <section>
               <h2 className="text-[11px] uppercase tracking-widest text-[var(--muted)] mb-2">
@@ -322,7 +432,7 @@ export default function Dashboard() {
               </h2>
               <div className="space-y-2">
                 {confirmedItems.map((e) => (
-                  <TxCard key={e.id} e={e} />
+                  <TxCard key={e.id} e={e} onDeleted={handleDeleted} />
                 ))}
                 {confirmedItems.length === 0 && (
                   <p className="text-xs text-[var(--muted)] text-center py-4">

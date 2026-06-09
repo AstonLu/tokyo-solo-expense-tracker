@@ -11,6 +11,7 @@ import {
 
 const SHEET_TAB = "expenses";
 const SHEET_RANGE = `${SHEET_TAB}!A:Q`;
+const PENDING_TAB = "pending_expenses";
 
 /** Column order — must match Expense field order and the documented schema. */
 const HEADER_ROW = [
@@ -33,9 +34,16 @@ const HEADER_ROW = [
   "raw_ai_response",
 ];
 
-/**
- * Throws a clear, actionable error when Sheets credentials are missing.
- */
+export interface PendingDraft {
+  draft: ExtractedExpense;
+  telegram_message_id: string;
+  original_text_context: string;
+  image_file_reference: string;
+  raw_ai_response: string;
+}
+
+// ── Auth / client helpers ─────────────────────────────────────────────────────
+
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const rawKey = process.env.GOOGLE_PRIVATE_KEY;
@@ -60,6 +68,35 @@ function getSheetId(): string {
 function sheetsClient() {
   return google.sheets({ version: "v4", auth: getAuth() });
 }
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+async function getTabSheetId(
+  client: ReturnType<typeof sheetsClient>,
+  spreadsheetId: string,
+  title: string
+): Promise<number | null> {
+  const res = await client.spreadsheets.get({ spreadsheetId });
+  const sheet = res.data.sheets?.find((s) => s.properties?.title === title);
+  return sheet?.properties?.sheetId ?? null;
+}
+
+/** Creates the pending_expenses tab if it does not already exist. */
+async function ensurePendingTab(
+  client: ReturnType<typeof sheetsClient>,
+  spreadsheetId: string
+): Promise<void> {
+  const id = await getTabSheetId(client, spreadsheetId, PENDING_TAB);
+  if (id !== null) return;
+  await client.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{ addSheet: { properties: { title: PENDING_TAB } } }],
+    },
+  });
+}
+
+// ── Expenses tab ─────────────────────────────────────────────────────────────
 
 function expenseToRow(e: Expense): (string | number)[] {
   return [
@@ -182,6 +219,179 @@ export async function isDuplicate(
   return all.some((e) => e.telegram_message_id === telegram_message_id);
 }
 
+/**
+ * Delete a single expense row by its UUID.
+ * Finds the row in the expenses tab and removes it via batchUpdate.
+ */
+export async function deleteExpense(id: string): Promise<void> {
+  const client = sheetsClient();
+  const spreadsheetId = getSheetId();
+
+  const res = await client.spreadsheets.values.get({
+    spreadsheetId,
+    range: SHEET_RANGE,
+  });
+
+  const rows = res.data.values || [];
+  // rows[0] is the header; data starts at rows[1].
+  const rowIndex = rows.findIndex((r) => r[0] === id);
+  if (rowIndex <= 0) throw new Error("Record not found");
+
+  const tabId = await getTabSheetId(client, spreadsheetId, SHEET_TAB);
+  if (tabId === null) throw new Error("expenses tab not found");
+
+  await client.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId: tabId,
+              dimension: "ROWS",
+              startIndex: rowIndex,
+              endIndex: rowIndex + 1,
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
+// ── Pending drafts tab ────────────────────────────────────────────────────────
+//
+// Serverless functions on Vercel share no in-memory state between invocations,
+// so pending drafts are persisted in a "pending_expenses" tab in the same
+// Google Sheet. Each row corresponds to one chat session (keyed by chat_id).
+// The tab is created automatically on first use.
+
+/**
+ * Persist (or overwrite) the pending draft for a given chat_id.
+ */
+export async function setPendingDraft(
+  chatId: string,
+  data: PendingDraft
+): Promise<void> {
+  const client = sheetsClient();
+  const spreadsheetId = getSheetId();
+
+  await ensurePendingTab(client, spreadsheetId);
+
+  const res = await client.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${PENDING_TAB}!A:A`,
+  });
+
+  const rows = res.data.values || [];
+  const rowIndex = rows.findIndex((r) => r[0] === chatId);
+
+  const row = [
+    chatId,
+    new Date().toISOString(),
+    JSON.stringify(data.draft),
+    data.telegram_message_id,
+    data.original_text_context,
+    data.image_file_reference,
+    data.raw_ai_response,
+  ];
+
+  if (rowIndex >= 0) {
+    // Overwrite existing row (rowIndex is 0-based; Sheets notation is 1-based)
+    await client.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${PENDING_TAB}!A${rowIndex + 1}:G${rowIndex + 1}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [row] },
+    });
+  } else {
+    await client.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${PENDING_TAB}!A:G`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [row] },
+    });
+  }
+}
+
+/**
+ * Retrieve the pending draft for a given chat_id, or null if none exists.
+ * Errors are swallowed so a missing/malformed tab never breaks the bot.
+ */
+export async function getPendingDraft(
+  chatId: string
+): Promise<PendingDraft | null> {
+  try {
+    const client = sheetsClient();
+    const spreadsheetId = getSheetId();
+
+    const res = await client.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${PENDING_TAB}!A:G`,
+    });
+
+    const rows = res.data.values || [];
+    const row = rows.find((r) => r[0] === chatId);
+    if (!row) return null;
+
+    return {
+      draft: JSON.parse(row[2]) as ExtractedExpense,
+      telegram_message_id: row[3] || "",
+      original_text_context: row[4] || "",
+      image_file_reference: row[5] || "",
+      raw_ai_response: row[6] || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete the pending draft row for a given chat_id.
+ * Silently succeeds if no draft exists.
+ */
+export async function clearPendingDraft(chatId: string): Promise<void> {
+  try {
+    const client = sheetsClient();
+    const spreadsheetId = getSheetId();
+
+    const res = await client.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${PENDING_TAB}!A:A`,
+    });
+
+    const rows = res.data.values || [];
+    const rowIndex = rows.findIndex((r) => r[0] === chatId);
+    if (rowIndex < 0) return;
+
+    const tabId = await getTabSheetId(client, spreadsheetId, PENDING_TAB);
+    if (tabId === null) return;
+
+    await client.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId: tabId,
+                dimension: "ROWS",
+                startIndex: rowIndex,
+                endIndex: rowIndex + 1,
+              },
+            },
+          },
+        ],
+      },
+    });
+  } catch {
+    // Silently ignore — draft cleanup should never crash the bot
+  }
+}
+
+// ── Summary ───────────────────────────────────────────────────────────────────
+
 export function computeSummary(expenses: Expense[]): DashboardSummary {
   const total_by_currency: Record<string, number> = {};
   const currencyCounts: Record<string, number> = {};
@@ -202,7 +412,6 @@ export function computeSummary(expenses: Expense[]): DashboardSummary {
     if (e.needs_review) needs_review_count += 1;
   }
 
-  // Primary currency = the one used in the most transactions (JPY-dominant trips).
   const primary_currency =
     Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "JPY";
 

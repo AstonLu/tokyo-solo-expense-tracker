@@ -32,14 +32,21 @@ export interface ExtractionOutput {
 
 const SYSTEM_PROMPT = `You extract a single structured expense from a traveler's payment screenshot, receipt, paper invoice, or text note.
 
+MERCHANT IDENTIFICATION (most important):
+- Look for the store name in: receipt header/top section, logo text, company name, large bold text, brand name, Japanese/Chinese store name text.
+- Common Japanese chain examples: 吉野家 (Yoshinoya), すき家 (Sukiya), マクドナルド (McDonald's), セブン-イレブン (7-Eleven), ローソン (Lawson), ファミリーマート (FamilyMart), スターバックス (Starbucks), ドトール (Doutor).
+- If you see Japanese katakana/hiragana text at the top that looks like a store name, use it.
+- Do NOT leave merchant blank if any store identifier is visible.
+- If you are uncertain about the merchant name, set confidence_score low and needs_review true — but still provide your best guess.
+
 Rules:
 - Default currency is JPY unless the document clearly shows another currency.
-- amount must be the final total paid (look for 合計 / TOTAL / 総計 on receipts).
+- amount must be the final total paid (look for 合計 / TOTAL / 総計 / お会計 on receipts).
 - Japanese era dates: 令和7 = 2025, 令和8 = 2026. Output transaction_date as YYYY-MM-DD, or null if absent.
 - category MUST be exactly one of: 餐飲 交通 購物 住宿 門票 其他
 - payment_method: short label such as "信用卡", "現金", "IC卡", "QR支付", or "" if unknown.
 - location: place/area if derivable (e.g. "Shibuya"), else "".
-- ai_summary: one concise human sentence describing the expense.
+- ai_summary: one concise human sentence describing the expense in Traditional Chinese.
 - confidence_score: a number from 0 to 1 reflecting how sure you are about amount + currency + merchant together.
 - needs_review: true if amount, currency, or merchant is uncertain or missing.
 - Never invent an amount. If you cannot find one, set amount to 0, confidence_score low, needs_review true.
@@ -72,7 +79,7 @@ async function callModel(input: ExtractionInput): Promise<string> {
   }
 
   const instruction = input.imageBase64
-    ? "Extract the expense from this image."
+    ? "Extract the expense from this receipt/payment image. Pay special attention to the store name and final total amount."
     : "Extract the expense from this note.";
   const context = input.textContext
     ? `\nUser context: ${input.textContext}`
@@ -104,7 +111,6 @@ function safeParse(raw: string): Record<string, unknown> {
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    // Some models wrap JSON in prose or fences — recover the first JSON object.
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
       try {
@@ -141,7 +147,6 @@ function normalize(
       : "其他"
   ) as ExpenseCategory;
 
-  // Enforce review whenever the core fields look weak, regardless of model claim.
   const coreUncertain =
     amount <= 0 ||
     !merchant ||
