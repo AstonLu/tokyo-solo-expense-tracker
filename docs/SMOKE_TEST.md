@@ -88,7 +88,7 @@ Walk the pipeline, each step gates the next:
 | `TELEGRAM_WEBHOOK_SECRET` | you choose (random string) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | @userinfobot (your numeric id) |
 | `GROQ_API_KEY` | console.groq.com/keys (free tier) |
-| `AI_MODEL` | `llama-3.2-11b-vision-preview` (default is fine) |
+| `AI_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` (default is fine) |
 | `GOOGLE_SHEETS_ID` | Sheet URL |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | service-account JSON `client_email` |
 | `GOOGLE_PRIVATE_KEY` | service-account JSON `private_key` (`\n`-escaped) |

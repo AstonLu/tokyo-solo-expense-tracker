@@ -59,7 +59,7 @@ function getClient(): Groq {
 
 async function callModel(input: ExtractionInput): Promise<string> {
   const client = getClient();
-  const model = process.env.AI_MODEL || "llama-3.2-11b-vision-preview";
+  const model = process.env.AI_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
   const userContent: ContentPart[] = [];
 

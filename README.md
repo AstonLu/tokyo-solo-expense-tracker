@@ -88,7 +88,7 @@ cp .env.local.example .env.local
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies inbound webhook requests |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Allow-list of chat ids (blank = all) |
 | `GROQ_API_KEY` | Groq API key (free at console.groq.com/keys) |
-| `AI_MODEL` | Vision model id (default `llama-3.2-11b-vision-preview`) |
+| `AI_MODEL` | Vision model id (default `meta-llama/llama-4-scout-17b-16e-instruct`) |
 | `GOOGLE_SHEETS_ID` | Target spreadsheet |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Service account identity |
 | `GOOGLE_PRIVATE_KEY` | Service account key (`\n`-escaped) |

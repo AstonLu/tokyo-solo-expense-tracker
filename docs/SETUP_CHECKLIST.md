@@ -66,7 +66,7 @@ Full reference: [`README.md`](../README.md). Variable names: [`.env.local.exampl
 
 1. Open [console.groq.com/keys](https://console.groq.com/keys) → create an API key.
 2. Set `GROQ_API_KEY` to it.
-3. Set `AI_MODEL=llama-3.2-11b-vision-preview` (any Groq vision-capable model id works).
+3. Set `AI_MODEL=meta-llama/llama-4-scout-17b-16e-instruct` (any Groq vision-capable model id works).
 
 ✅ Key is set; model id is vision-capable.
 
@@ -134,7 +134,7 @@ in the Sheet and on `/dashboard`.
 | `TELEGRAM_WEBHOOK_SECRET` | you choose | 2 |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | @userinfobot | 2 |
 | `GROQ_API_KEY` | console.groq.com/keys | 7 |
-| `AI_MODEL` | `llama-3.2-11b-vision-preview` | 7 |
+| `AI_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | 7 |
 | `GOOGLE_SHEETS_ID` | Sheet URL | 3 |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | service account JSON | 4 |
 | `GOOGLE_PRIVATE_KEY` | service account JSON | 4 |
