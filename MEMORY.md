@@ -43,7 +43,7 @@ Two-page mobile app with fixed bottom nav (記帳 / 行程):
 - [x] `components/Dashboard.tsx` — total / by-currency / by-category / needs-review / recent (expandable) + loading/empty/error
 - [x] `scripts/register-webhook.ts` — Telegram setWebhook
 - [x] `components/BottomNav.tsx` — fixed bottom nav, safe-area, PWA-ready
-- [x] `components/Itinerary.tsx` — Tokyo 2D1N timeline (TBD-marked, easily editable)
+- [x] `components/Itinerary.tsx` — Tokyo 2D1N full live travel plan: Day 1 (新宿鏡頭尋價→吉祥寺交接→銀座/表參道確認庫存) + Day 2 (POLÈNE/CELINE/Dior購入→成田機場)。含每日優先順序、可跳過清單、購買規則、信用卡策略、全程注意事項。
 - [x] `app/itinerary/page.tsx` — static /itinerary route
 - [x] `app/layout.tsx` — PWA meta (apple-mobile-web-app-capable, viewport-fit=cover, themeColor)
 - [x] README (full setup), docs/ai/DESIGN_TASTE_GUIDE.md
