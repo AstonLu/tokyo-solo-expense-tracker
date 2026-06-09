@@ -67,6 +67,7 @@ ai_summary · confidence_score · needs_review · image_file_reference · raw_ai
 
 ## Key decisions
 
+- **Draft→confirm flow** (2026-06-09): OCR result is stored as a pending draft in the `pending_expenses` Google Sheets tab. Nothing is written to `expenses` until the user replies with a confirmation keyword. Corrections update the draft in-place. "取消" discards it. In-memory state is not used because Vercel serverless has no shared state across invocations.
 - **Provider-agnostic AI** via `GROQ_API_KEY` / `AI_MODEL`; swap by editing `lib/ai.ts` only
 - **Google Sheets** as single source of truth (no DB, no Supabase)
 - **needs_review enforced in code** (`lib/ai.ts normalize`) — low-confidence rows are written, never dropped
