@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "register-webhook": "npx dotenv-cli -e .env.local -- npx tsx scripts/register-webhook.ts"
+    "register-webhook": "node --experimental-strip-types --env-file=.env.local scripts/register-webhook.ts"
   },
   "dependencies": {
     "googleapis": "^173.0.0",
