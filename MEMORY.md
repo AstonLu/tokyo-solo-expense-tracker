@@ -24,6 +24,13 @@ Telegram (image + caption)
   → /api/expenses → /dashboard (components/Dashboard.tsx)
 ```
 
+## App structure (current)
+
+Two-page mobile app with fixed bottom nav (記帳 / 行程):
+- `/dashboard` → expense dashboard (dynamic, fetches Google Sheets)
+- `/itinerary` → Tokyo 2D1N itinerary (static, prerendered)
+- `/` redirects to `/dashboard`
+
 ## Implemented
 
 - [x] `lib/types.ts` — Expense (17-field schema), ExtractedExpense, DashboardSummary
@@ -35,6 +42,10 @@ Telegram (image + caption)
 - [x] `app/api/expenses/route.ts` — transactions + summary; clear error on missing creds
 - [x] `components/Dashboard.tsx` — total / by-currency / by-category / needs-review / recent (expandable) + loading/empty/error
 - [x] `scripts/register-webhook.ts` — Telegram setWebhook
+- [x] `components/BottomNav.tsx` — fixed bottom nav, safe-area, PWA-ready
+- [x] `components/Itinerary.tsx` — Tokyo 2D1N timeline (TBD-marked, easily editable)
+- [x] `app/itinerary/page.tsx` — static /itinerary route
+- [x] `app/layout.tsx` — PWA meta (apple-mobile-web-app-capable, viewport-fit=cover, themeColor)
 - [x] README (full setup), docs/ai/DESIGN_TASTE_GUIDE.md
 - [x] typecheck + lint + build all pass
 
