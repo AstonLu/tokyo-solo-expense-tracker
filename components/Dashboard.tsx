@@ -280,7 +280,7 @@ export default function Dashboard() {
 
   return (
     <main className="min-h-dvh bg-[var(--background)]">
-      <div className="max-w-md mx-auto px-4 pb-12">
+      <div className="max-w-md mx-auto px-4 pb-24">
         <header className="pt-10 pb-5 flex items-end justify-between">
           <div>
             <h1 className="text-lg font-semibold tracking-tight">東京記帳 MVP</h1>

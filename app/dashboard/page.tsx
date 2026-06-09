@@ -14,7 +14,7 @@ export default function DashboardPage() {
 
 function DashboardSkeleton() {
   return (
-    <div className="min-h-dvh bg-[var(--background)] px-4 pb-8">
+    <div className="min-h-dvh bg-[var(--background)] px-4 pb-24">
       <header className="pt-10 pb-6 max-w-md mx-auto">
         <div className="h-5 w-24 bg-[var(--border)] rounded animate-pulse mb-2" />
         <div className="h-4 w-40 bg-[var(--border)] rounded animate-pulse opacity-60" />
