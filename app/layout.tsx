@@ -15,14 +15,14 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "東京旅程",
-    template: "%s · 東京旅程",
+    default: "Amyrica 旅費",
+    template: "%s · Amyrica 旅費",
   },
-  description: "東京 2D1N · 記帳 + 行程",
+  description: "Aston × Amy 美國畢業旅行 · 記帳 + 分帳",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "東京旅程",
+    title: "Amyrica 旅費",
   },
 };
 

@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test \"lib/**/*.test.ts\"",
     "register-webhook": "node --experimental-strip-types --env-file=.env.local scripts/register-webhook.ts"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 import { Bot, Context, webhookCallback } from "grammy";
-import { extractExpense } from "./ai";
+import { extractExpense, interpretReply, finalizeDraft } from "./ai";
 import {
   appendExpense,
   isDuplicate,
@@ -10,9 +10,9 @@ import {
   PendingDraft,
 } from "./sheets";
 import { getCategoryEmoji } from "./categories";
-import { Expense, ExtractedExpense, ExpenseCategory, ALL_CATEGORIES } from "./types";
+import { Expense, ExtractedExpense, PaidBy, BenefitType } from "./types";
 
-// ── Keyword sets ──────────────────────────────────────────────────────────────
+// ── Fast-path keyword sets (confirm / cancel need no AI call) ──────────────────
 
 const CONFIRM_RE =
   /^\s*(ok|okay|確認|沒問題|對|可以|yes|好|好的|確定|寫入|記帳|存|存入)\s*$/i;
@@ -20,11 +20,11 @@ const CONFIRM_RE =
 const CANCEL_RE =
   /^\s*(取消|刪掉|刪除|放棄|discard|cancel|不要|算了|不用了|不寫)\s*$/i;
 
-// ── TWD rough estimates ───────────────────────────────────────────────────────
+// ── TWD rough estimates (handy for the two Taiwanese travelers) ────────────────
 
 const APPROX_TWD: Record<string, number> = {
-  JPY: 0.216,
   USD: 32.0,
+  JPY: 0.216,
   EUR: 35.0,
   HKD: 4.1,
   KRW: 0.024,
@@ -39,33 +39,78 @@ function estimateTwd(amount: number, currency: string): string | null {
   return `≈ NT$${Math.round(amount * rate).toLocaleString()}`;
 }
 
+// ── Split-field display helpers ────────────────────────────────────────────────
+
+const PAID_BY_LABEL: Record<PaidBy, string> = {
+  aston: "Aston",
+  amy: "Amy",
+  unknown: "待確認",
+};
+
+const BENEFIT_LABEL: Record<BenefitType, string> = {
+  shared_50_50: "50 / 50 共同",
+  aston_only: "全部 Aston",
+  amy_only: "全部 Amy",
+  custom: "自訂分攤",
+  unknown: "待確認",
+};
+
+/** Minimal clarification question for whatever required fields are missing. */
+function clarifyQuestion(missing: string[]): string {
+  const needAmount = missing.includes("amount");
+  const needMerchant = missing.includes("merchant");
+  if (needAmount && needMerchant) return "❓ 請問這筆的店名和金額是？";
+  if (needAmount) return "❓ 請問金額是多少？";
+  if (needMerchant) return "❓ 請問店名是？";
+  if (missing.includes("paid_by")) return "❓ 這筆是 Aston 還是 Amy 付的？";
+  return "";
+}
+
 // ── Draft formatting ──────────────────────────────────────────────────────────
 
 function formatDraft(d: ExtractedExpense): string {
   const emoji = getCategoryEmoji(d.category);
   const twd = estimateTwd(d.amount, d.currency);
-  const amountStr = `${d.amount.toLocaleString()} ${d.currency}${twd ? `（${twd}）` : ""}`;
-  const confidence = `${(d.confidence_score * 100).toFixed(0)}%`;
+  const amountStr =
+    d.amount > 0
+      ? `${d.amount.toLocaleString()} ${d.currency}${twd ? `（${twd}）` : ""}`
+      : "金額待確認";
+  const merchantName =
+    d.merchant_display_name_zh && d.merchant_display_name_zh !== d.merchant
+      ? `${d.merchant}（${d.merchant_display_name_zh}）`
+      : d.merchant;
 
   const lines = [
     "🧾 草稿（待確認）",
     "",
     d.transaction_date ? `📅 ${d.transaction_date}` : "📅 日期不明",
-    `🏪 ${d.merchant}`,
-    `💴 ${amountStr}`,
+    `🏪 ${merchantName}`,
+    `💵 ${amountStr}`,
     `${emoji} ${d.category}${d.payment_method ? ` · ${d.payment_method}` : ""}`,
+    `👤 付款：${PAID_BY_LABEL[d.paid_by]} · 分攤：${BENEFIT_LABEL[d.benefit_type]}`,
   ];
 
+  if (d.amount > 0) {
+    lines.push(
+      `   Aston ${d.aston_share_amount.toLocaleString()} · Amy ${d.amy_share_amount.toLocaleString()} ${d.currency}`
+    );
+  }
   if (d.location) lines.push(`📍 ${d.location}`);
+  if (d.inferred_items) lines.push(`🛒 ${d.inferred_items}`);
+  if (d.split_note) lines.push(`📝 ${d.split_note}`);
 
-  lines.push(
-    `🎯 信心度：${confidence}${d.needs_review ? "（建議確認）" : ""}`,
-    "",
-    "───────────────",
-    "✅ 回覆「確認」或「OK」→ 寫入",
-    "✏️ 修改：回覆「店名是吉野家」「金額是684」「類別是餐飲」等",
-    "❌ 回覆「取消」→ 丟棄草稿"
-  );
+  const question = clarifyQuestion(d.missing_fields);
+  if (question) {
+    lines.push("", question);
+  } else {
+    lines.push(
+      "",
+      "───────────────",
+      "✅ 回覆「確認」→ 寫入",
+      "✏️ 修改：例如「金額是 45」「Amy 付的」「這是 Aston 的」",
+      "❌ 回覆「取消」→ 丟棄草稿"
+    );
+  }
 
   return lines.join("\n");
 }
@@ -76,136 +121,28 @@ function formatConfirmed(e: Expense): string {
     e.needs_review ? "⚠️ 已記錄（建議到儀表板確認）" : "✅ 已記錄",
     "",
     `🏪 ${e.merchant}`,
-    `💴 ${e.amount.toLocaleString()} ${e.currency}`,
+    `💵 ${e.amount.toLocaleString()} ${e.currency}`,
     `${emoji} ${e.category}${e.payment_method ? ` · ${e.payment_method}` : ""}`,
+    `👤 ${PAID_BY_LABEL[e.paid_by]} 付 · ${BENEFIT_LABEL[e.benefit_type]}`,
   ];
-  if (e.location) lines.push(`📍 ${e.location}`);
-  if (e.transaction_date) lines.push(`🗓 ${e.transaction_date}`);
-  lines.push("", `📝 ${e.ai_summary}`);
-  if (e.needs_review) {
+  if (e.amount > 0) {
     lines.push(
-      "",
-      `🔍 信心度 ${(e.confidence_score * 100).toFixed(0)}% — 請到儀表板確認金額 / 幣別 / 商家`
+      `   Aston ${e.aston_share_amount.toLocaleString()} · Amy ${e.amy_share_amount.toLocaleString()} ${e.currency}`
     );
   }
+  if (e.location) lines.push(`📍 ${e.location}`);
+  lines.push("", `📝 ${e.ai_summary}`);
   return lines.join("\n");
-}
-
-// ── Correction parsing ────────────────────────────────────────────────────────
-
-const CATEGORY_PATTERNS: [RegExp, ExpenseCategory][] = [
-  [/餐飲|吃飯|飲食|食物|餐廳|午餐|晚餐|早餐|咖啡|拉麵|壽司|便當|牛丼|定食/, "餐飲"],
-  [/交通|電車|巴士|公車|地鐵|捷運|計程|新幹線|Suica|IC卡/, "交通"],
-  [/購物|買東西|衣服|藥妝|電器|雜貨|超市|便利店|百貨/, "購物"],
-  [/住宿|飯店|旅館|民宿|hostel|hotel|check.in/, "住宿"],
-  [/門票|入場|景點|博物館|展覽|門|票/, "門票"],
-];
-
-function mapCategory(text: string): ExpenseCategory | null {
-  const t = text.trim();
-  for (const [re, cat] of CATEGORY_PATTERNS) {
-    if (re.test(t)) return cat;
-  }
-  if ((ALL_CATEGORIES as string[]).includes(t)) return t as ExpenseCategory;
-  return null;
-}
-
-/**
- * Try to extract field updates from a correction message.
- * Returns { updated, fields } if anything changed, or null if nothing matched.
- *
- * Handled patterns:
- *  Merchant : "店名是吉野家"  "商家是xxx"  "叫xxx"  plain name <= 15 CJK/alpha chars
- *  Amount   : "金額是684"  "¥684"  "684円"  bare number
- *  Category : "類別是餐飲"  "分類是xxx"
- *  Payment  : "付款是現金"  "用現金"  "刷信用卡"
- *  Date     : "日期是6/9"  "6月9日"
- */
-export function applyCorrection(
-  text: string,
-  draft: ExtractedExpense
-): { updated: ExtractedExpense; fields: string[] } | null {
-  const fields: string[] = [];
-  const next = { ...draft };
-  const t = text.trim();
-
-  // ── Merchant ──────────────────────────────────────────────────────────────
-  const merchantExplicit = t.match(
-    /^(?:店名|商家|名稱|地方|叫)\s*(?:是|：|:|叫)?\s*(.{1,30})$/
-  );
-  if (merchantExplicit) {
-    next.merchant = merchantExplicit[1].trim();
-    fields.push("商家");
-  }
-
-  // ── Amount ────────────────────────────────────────────────────────────────
-  if (!fields.includes("商家")) {
-    const amountMatch =
-      t.match(/^(?:金額|價格|費用|共)\s*(?:是|：|:)?\s*([\d,，.]+)\s*(?:円|¥|元|JPY|TWD)?$/) ||
-      t.match(/^[¥￥]([\d,，.]+)/) ||
-      t.match(/^([\d,，.]+)\s*(?:円|¥|元|JPY|TWD)/) ||
-      t.match(/^([\d,，.]+)$/);
-    if (amountMatch) {
-      const val = parseFloat(amountMatch[1].replace(/[,，]/g, ""));
-      if (val > 0) {
-        next.amount = val;
-        fields.push("金額");
-      }
-    }
-  }
-
-  // ── Category ──────────────────────────────────────────────────────────────
-  const catExplicit = t.match(/^(?:類別|分類|類型)\s*(?:是|：|:)?\s*(.+)$/);
-  if (catExplicit) {
-    const cat = mapCategory(catExplicit[1]);
-    if (cat) {
-      next.category = cat;
-      fields.push("類別");
-    }
-  }
-
-  // ── Payment method ────────────────────────────────────────────────────────
-  const payMatch = t.match(
-    /^(?:付款方式?|支付方式?|刷)\s*(?:是|：|:|用)?\s*(.{1,20})$/
-  );
-  if (payMatch) {
-    next.payment_method = payMatch[1].trim();
-    fields.push("付款方式");
-  }
-
-  // ── Fallback: short pure-name text → assume merchant ─────────────────────
-  // e.g. user sends "吉野家" or "McDonald's" after an incorrect OCR
-  if (
-    fields.length === 0 &&
-    t.length <= 20 &&
-    /^[一-鿿぀-ゟ゠-ヿ･-ﾟa-zA-Z·・\s]+$/.test(t)
-  ) {
-    next.merchant = t;
-    fields.push("商家");
-  }
-
-  if (fields.length === 0) return null;
-
-  // Re-check confidence after correction
-  if (fields.includes("商家") || fields.includes("金額")) {
-    const stillUncertain = next.amount <= 0 || !next.merchant || next.confidence_score < 0.6;
-    next.needs_review = stillUncertain;
-    // Bump confidence when user explicitly corrects key fields
-    if (!stillUncertain && next.confidence_score < 0.7) {
-      next.confidence_score = 0.75;
-    }
-  }
-
-  return { updated: next, fields };
 }
 
 // ── Plain text: does it look like a new expense? ──────────────────────────────
 
 function looksLikeNewExpense(text: string): boolean {
-  const hasAmount = /\d+/.test(text);
-  if (!hasAmount) return false;
+  if (!/\d/.test(text)) return false;
   const hasContext =
-    /[¥￥円元]|JPY|TWD|NT\$|餐|飯|食|買|購|票|住|宿|乘|搭|電車|巴士|計程|咖啡|便利/.test(text);
+    /[$＄¥￥円元]|usd|twd|nt\$|dollar|paid|付|餐|飯|食|買|購|票|住|宿|gas|油|hotel|coffee|uber|lyft|waymo|bart|muni|park|outlet|rental|grocer|lunch|dinner|breakfast/i.test(
+      text
+    );
   return hasContext;
 }
 
@@ -232,13 +169,9 @@ function getBot(): Bot {
   return bot;
 }
 
-// ── Shared draft → confirm flow ───────────────────────────────────────────────
+// ── Shared flows ───────────────────────────────────────────────────────────────
 
-/**
- * Run OCR, store as pending draft, reply with summary.
- * Called from both the photo handler and (when text looks like a new expense)
- * the text handler.
- */
+/** Run extraction, store as pending draft, reply with the formatted summary. */
 async function createDraftAndReply(
   ctx: Context,
   chatId: string,
@@ -263,7 +196,6 @@ async function createDraftAndReply(
     };
 
     await setPendingDraft(chatId, draftData);
-
     await ctx.api.editMessageText(chatNumId, pending.message_id, formatDraft(extracted));
   } catch (err) {
     console.error("Draft creation error:", err);
@@ -275,33 +207,67 @@ async function createDraftAndReply(
   }
 }
 
+/** Write a confirmed draft to Sheets. Keeps the draft on failure for retry. */
+async function writeDraft(ctx: Context, chatId: string, pending: PendingDraft): Promise<void> {
+  const writing = await ctx.reply("⏳ 寫入中…");
+  try {
+    await ensureHeaders();
+    const expense = await appendExpense({
+      extracted: pending.draft,
+      source: pending.image_file_reference ? "telegram_photo" : "telegram_text",
+      telegram_message_id: pending.telegram_message_id,
+      original_text_context: pending.original_text_context,
+      image_file_reference: pending.image_file_reference,
+      raw_ai_response: pending.raw_ai_response,
+    });
+    await clearPendingDraft(chatId);
+    await ctx.api.editMessageText(ctx.chat!.id, writing.message_id, formatConfirmed(expense));
+  } catch (err) {
+    console.error("Write error:", err);
+    await ctx.api.editMessageText(
+      ctx.chat!.id,
+      writing.message_id,
+      "❌ 寫入失敗，請稍後再試。草稿已保留，再次回覆「確認」重試。"
+    );
+  }
+}
+
 // ── Handler registration ──────────────────────────────────────────────────────
 
 function registerHandlers(bot: Bot) {
   const allowed = getAllowedChatIds();
-  const isAllowed = (chatId: number) =>
-    allowed.size === 0 || allowed.has(String(chatId));
+  // Fail closed: an empty allow-list locks the bot rather than serving everyone.
+  if (allowed.size === 0) {
+    console.warn(
+      "⚠️ TELEGRAM_ALLOWED_CHAT_IDS is empty — bot is LOCKED (fail-closed). " +
+        "Set it to your Telegram chat id(s) to enable the bot."
+    );
+  }
+  const isAllowed = (chatId: number) => allowed.has(String(chatId));
 
   // /start
   bot.command("start", (ctx) => {
     if (!isAllowed(ctx.chat.id)) return;
     ctx.reply(
       [
-        "👋 旅行記帳 Bot",
+        "👋 Amyrica 旅費 Bot（Aston × Amy 美國畢業旅行）",
         "",
-        "📸 傳一張收據 / 付款截圖 → AI 辨識後顯示草稿",
+        "📸 傳收據 / 付款截圖 → AI 辨識後顯示草稿",
         "確認後才寫入 Google Sheets",
         "",
-        "📝 也可純文字：晚餐 2800 日圓 信用卡",
+        "📝 也可純文字：例如",
+        "・Aston 晚餐 60",
+        "・Amy paid gas 80",
+        "・我付 outlet 120，但這是 Amy 的",
         "",
         "草稿確認：回覆「OK」或「確認」",
-        "草稿修改：回覆「店名是xxx」「金額是xxx」",
+        "草稿修改：直接說「金額是 45」「Amy 付的」「店名翻成中文」",
         "草稿取消：回覆「取消」",
       ].join("\n")
     );
   });
 
-  // ── Photo: always starts a new draft ─────────────────────────────────────
+  // ── Photo: always starts a new draft. Caption is high-priority context. ───
   bot.on("message:photo", async (ctx) => {
     if (!isAllowed(ctx.chat.id)) return;
 
@@ -313,7 +279,6 @@ function registerHandlers(bot: Bot) {
       return;
     }
 
-    // If there's a pending draft, overwrite it (new photo = new intent)
     const existing = await getPendingDraft(chatId);
     if (existing) {
       await ctx.reply(
@@ -325,7 +290,6 @@ function registerHandlers(bot: Bot) {
     const best = photos[photos.length - 1];
     const caption = ctx.message.caption || "";
 
-    // Download photo
     let imageBase64: string;
     try {
       const file = await ctx.api.getFile(best.file_id);
@@ -339,14 +303,19 @@ function registerHandlers(bot: Bot) {
       return;
     }
 
-    await createDraftAndReply(ctx, chatId, { imageBase64, mimeType: "image/jpeg", textContext: caption }, {
-      telegram_message_id: msgId,
-      original_text_context: caption,
-      image_file_reference: best.file_id,
-    });
+    await createDraftAndReply(
+      ctx,
+      chatId,
+      { imageBase64, mimeType: "image/jpeg", textContext: caption },
+      {
+        telegram_message_id: msgId,
+        original_text_context: caption,
+        image_file_reference: best.file_id,
+      }
+    );
   });
 
-  // ── Text: correction / confirm / cancel / new expense ────────────────────
+  // ── Text: confirm / cancel / conversational reply / new expense ──────────
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
     if (text.startsWith("/")) return;
@@ -357,69 +326,76 @@ function registerHandlers(bot: Bot) {
 
     const pending = await getPendingDraft(chatId);
 
-    // ── Path A: pending draft exists ──────────────────────────────────────
+    // ── Path A: a draft is pending ────────────────────────────────────────
     if (pending) {
-      // Confirm
+      // Fast paths (no AI call)
       if (CONFIRM_RE.test(text)) {
-        const writing = await ctx.reply("⏳ 寫入中…");
-        try {
-          await ensureHeaders();
-          const expense = await appendExpense({
-            extracted: pending.draft,
-            source: pending.image_file_reference ? "telegram_photo" : "telegram_text",
-            telegram_message_id: pending.telegram_message_id,
-            original_text_context: pending.original_text_context,
-            image_file_reference: pending.image_file_reference,
-            raw_ai_response: pending.raw_ai_response,
-          });
-          await clearPendingDraft(chatId);
-          await ctx.api.editMessageText(
-            ctx.chat.id,
-            writing.message_id,
-            formatConfirmed(expense)
-          );
-        } catch (err) {
-          console.error("Write error:", err);
-          await ctx.api.editMessageText(
-            ctx.chat.id,
-            writing.message_id,
-            "❌ 寫入失敗，請稍後再試。草稿已保留，再次回覆「確認」重試。"
-          );
-        }
+        await writeDraft(ctx, chatId, pending);
         return;
       }
-
-      // Cancel
       if (CANCEL_RE.test(text)) {
         await clearPendingDraft(chatId);
         await ctx.reply("🗑 已取消，草稿已刪除。");
         return;
       }
 
-      // Correction
-      const result = applyCorrection(text, pending.draft);
-      if (result) {
-        const { updated, fields } = result;
-        // Persist updated draft
-        await setPendingDraft(chatId, { ...pending, draft: updated });
-        await ctx.reply(
-          `✏️ 已更新：${fields.join("、")}\n\n${formatDraft(updated)}`
-        );
-      } else {
-        // Ambiguous — show current draft and ask
-        await ctx.reply(
-          `❓ 看不懂這個修改指令。\n\n目前草稿：\n${formatDraft(pending.draft)}`
-        );
+      // Otherwise classify intent — never blind field-replacement.
+      const interp = await interpretReply(pending.draft, text);
+
+      switch (interp.intent) {
+        case "confirm":
+          await writeDraft(ctx, chatId, pending);
+          return;
+
+        case "cancel":
+          await clearPendingDraft(chatId);
+          await ctx.reply("🗑 已取消，草稿已刪除。");
+          return;
+
+        case "new_expense":
+          if (await isDuplicate(msgId)) {
+            await ctx.reply("⚠️ 這則訊息已記錄過了");
+            return;
+          }
+          await ctx.reply("📝 收到新的一筆，先覆蓋目前草稿。");
+          await createDraftAndReply(ctx, chatId, { textContext: text }, {
+            telegram_message_id: msgId,
+            original_text_context: text,
+            image_file_reference: "",
+          });
+          return;
+
+        case "question":
+          await ctx.reply(
+            `${interp.reply_text || "（目前看不出答案）"}\n\n${formatDraft(pending.draft)}`
+          );
+          return;
+
+        case "correct":
+        case "transform":
+        case "answer": {
+          if (!interp.patch || Object.keys(interp.patch).length === 0) {
+            await ctx.reply(`❓ 沒有可更新的內容。\n\n${formatDraft(pending.draft)}`);
+            return;
+          }
+          const updated = finalizeDraft({ ...pending.draft, ...interp.patch });
+          await setPendingDraft(chatId, { ...pending, draft: updated });
+          const note = interp.reply_text ? `${interp.reply_text}\n\n` : "";
+          await ctx.reply(`✏️ 已更新\n\n${note}${formatDraft(updated)}`);
+          return;
+        }
+
+        case "unclear":
+        default:
+          await ctx.reply(`❓ 看不懂這個指令。\n\n目前草稿：\n${formatDraft(pending.draft)}`);
+          return;
       }
-      return;
     }
 
     // ── Path B: no pending draft ──────────────────────────────────────────
-    // Only create a draft if text clearly looks like a new expense.
-    // Prevents correction text like "吉野家" from creating 0-yen records.
     if (!looksLikeNewExpense(text)) {
       await ctx.reply(
-        "📸 請傳一張收據或付款截圖，或輸入包含金額的文字（例：拉麵 980 日圓）。"
+        "📸 請傳一張收據或付款截圖，或輸入包含金額的文字（例：Aston 晚餐 60、Amy paid gas 80）。"
       );
       return;
     }

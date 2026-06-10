@@ -6,14 +6,21 @@ import {
   ExpenseSource,
   DashboardSummary,
   ExpenseCategory,
+  PaidBy,
+  BenefitType,
   ALL_CATEGORIES,
 } from "./types";
+import { computeSettlement, toUsd } from "./split";
 
 const SHEET_TAB = "expenses";
-const SHEET_RANGE = `${SHEET_TAB}!A:Q`;
+const SHEET_RANGE = `${SHEET_TAB}!A:Y`;
 const PENDING_TAB = "pending_expenses";
 
-/** Column order — must match Expense field order and the documented schema. */
+/**
+ * Column order — must match Expense field order and the documented schema.
+ * Columns R–Y (paid_by … inferred_items) were appended after the original
+ * Tokyo A:Q schema. Appending (never reordering) keeps old rows valid.
+ */
 const HEADER_ROW = [
   "id",
   "created_at",
@@ -32,6 +39,15 @@ const HEADER_ROW = [
   "needs_review",
   "image_file_reference",
   "raw_ai_response",
+  // ── Split-expense columns (R–Y) ──
+  "paid_by",
+  "benefit_type",
+  "aston_share_amount",
+  "amy_share_amount",
+  "split_note",
+  "missing_fields",
+  "merchant_display_name_zh",
+  "inferred_items",
 ];
 
 export interface PendingDraft {
@@ -117,11 +133,23 @@ function expenseToRow(e: Expense): (string | number)[] {
     e.needs_review ? "TRUE" : "FALSE",
     e.image_file_reference,
     e.raw_ai_response,
+    // ── Split-expense columns ──
+    e.paid_by,
+    e.benefit_type,
+    e.aston_share_amount,
+    e.amy_share_amount,
+    e.split_note,
+    e.missing_fields.join(", "),
+    e.merchant_display_name_zh,
+    e.inferred_items,
   ];
 }
 
 function rowToExpense(row: string[]): Expense | null {
   if (!row[0] || row[0] === "id") return null;
+  // Old A:Q rows simply lack R–Y; fall back to safe defaults.
+  const paid_by = (row[17] as PaidBy) || "unknown";
+  const benefit_type = (row[18] as BenefitType) || "unknown";
   return {
     id: row[0] || "",
     created_at: row[1] || "",
@@ -130,7 +158,7 @@ function rowToExpense(row: string[]): Expense | null {
     transaction_date: row[4] || "",
     merchant: row[5] || "",
     amount: parseFloat(row[6]) || 0,
-    currency: row[7] || "JPY",
+    currency: row[7] || "USD",
     category: (row[8] as ExpenseCategory) || "其他",
     payment_method: row[9] || "",
     location: row[10] || "",
@@ -140,6 +168,18 @@ function rowToExpense(row: string[]): Expense | null {
     needs_review: String(row[14]).toUpperCase() === "TRUE",
     image_file_reference: row[15] || "",
     raw_ai_response: row[16] || "",
+    paid_by: (["aston", "amy", "unknown"] as string[]).includes(paid_by) ? paid_by : "unknown",
+    benefit_type: (
+      ["shared_50_50", "aston_only", "amy_only", "custom", "unknown"] as string[]
+    ).includes(benefit_type)
+      ? benefit_type
+      : "unknown",
+    aston_share_amount: parseFloat(row[19]) || 0,
+    amy_share_amount: parseFloat(row[20]) || 0,
+    split_note: row[21] || "",
+    missing_fields: row[22] ? row[22].split(",").map((s) => s.trim()).filter(Boolean) : [],
+    merchant_display_name_zh: row[23] || "",
+    inferred_items: row[24] || "",
   };
 }
 
@@ -148,9 +188,16 @@ export async function ensureHeaders(): Promise<void> {
   const sheetId = getSheetId();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${SHEET_TAB}!A1:A1`,
+    range: `${SHEET_TAB}!1:1`,
   });
-  if (res.data.values?.[0]?.[0] !== "id") {
+  const current = (res.data.values?.[0] as string[] | undefined) ?? [];
+  // Reconcile when missing, or when an older/shorter header (e.g. A:Q) is
+  // present. Writing row 1 only touches headers, never data rows.
+  const needsUpdate =
+    current[0] !== "id" ||
+    current.length < HEADER_ROW.length ||
+    HEADER_ROW.some((h, i) => current[i] !== h);
+  if (needsUpdate) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
       range: `${SHEET_TAB}!A1`,
@@ -169,24 +216,33 @@ export async function appendExpense(params: {
   raw_ai_response: string;
 }): Promise<Expense> {
   const now = new Date().toISOString();
+  const e = params.extracted;
   const expense: Expense = {
     id: uuidv4(),
     created_at: now,
     source: params.source,
     telegram_message_id: params.telegram_message_id,
-    transaction_date: params.extracted.transaction_date || now.slice(0, 10),
-    merchant: params.extracted.merchant,
-    amount: params.extracted.amount,
-    currency: params.extracted.currency,
-    category: params.extracted.category,
-    payment_method: params.extracted.payment_method,
-    location: params.extracted.location,
+    transaction_date: e.transaction_date || now.slice(0, 10),
+    merchant: e.merchant,
+    amount: e.amount,
+    currency: e.currency,
+    category: e.category,
+    payment_method: e.payment_method,
+    location: e.location,
     original_text_context: params.original_text_context,
-    ai_summary: params.extracted.ai_summary,
-    confidence_score: params.extracted.confidence_score,
-    needs_review: params.extracted.needs_review,
+    ai_summary: e.ai_summary,
+    confidence_score: e.confidence_score,
+    needs_review: e.needs_review,
     image_file_reference: params.image_file_reference,
     raw_ai_response: params.raw_ai_response,
+    paid_by: e.paid_by,
+    benefit_type: e.benefit_type,
+    aston_share_amount: e.aston_share_amount,
+    amy_share_amount: e.amy_share_amount,
+    split_note: e.split_note,
+    missing_fields: e.missing_fields,
+    merchant_display_name_zh: e.merchant_display_name_zh,
+    inferred_items: e.inferred_items,
   };
 
   await sheetsClient().spreadsheets.values.append({
@@ -413,7 +469,30 @@ export function computeSummary(expenses: Expense[]): DashboardSummary {
   }
 
   const primary_currency =
-    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "JPY";
+    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "USD";
+
+  // ── Split totals (USD estimate) + net settlement ──
+  let aston_paid_usd = 0;
+  let amy_paid_usd = 0;
+  let aston_share_usd = 0;
+  let amy_share_usd = 0;
+  for (const e of expenses) {
+    const amtUsd = toUsd(e.amount, e.currency);
+    if (e.paid_by === "aston") aston_paid_usd += amtUsd;
+    else if (e.paid_by === "amy") amy_paid_usd += amtUsd;
+    aston_share_usd += toUsd(e.aston_share_amount, e.currency);
+    amy_share_usd += toUsd(e.amy_share_amount, e.currency);
+  }
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const settlement = computeSettlement(
+    expenses.map((e) => ({
+      amount: e.amount,
+      currency: e.currency,
+      paid_by: e.paid_by,
+      aston_share_amount: e.aston_share_amount,
+      amy_share_amount: e.amy_share_amount,
+    }))
+  );
 
   return {
     total_by_currency,
@@ -422,5 +501,10 @@ export function computeSummary(expenses: Expense[]): DashboardSummary {
     total_primary: total_by_currency[primary_currency] || 0,
     count: expenses.length,
     needs_review_count,
+    aston_paid_usd: round2(aston_paid_usd),
+    amy_paid_usd: round2(amy_paid_usd),
+    aston_share_usd: round2(aston_share_usd),
+    amy_share_usd: round2(amy_share_usd),
+    settlement,
   };
 }

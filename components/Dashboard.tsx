@@ -5,16 +5,21 @@ import {
   Expense,
   DashboardSummary,
   ExpenseCategory,
+  PaidBy,
+  BenefitType,
   ALL_CATEGORIES,
 } from "@/lib/types";
 import { getCategoryEmoji } from "@/lib/categories";
+import { computeSettlement, toUsd } from "@/lib/split";
 
 interface ApiData {
   transactions: Expense[];
   summary: DashboardSummary;
 }
 
-/** Recompute summary client-side after a local delete. */
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Recompute summary client-side after a local delete. Mirrors lib/sheets. */
 function computeSummaryClient(transactions: Expense[]): DashboardSummary {
   const total_by_currency: Record<string, number> = {};
   const currencyCounts: Record<string, number> = {};
@@ -22,6 +27,10 @@ function computeSummaryClient(transactions: Expense[]): DashboardSummary {
     ALL_CATEGORIES.map((c) => [c, { total: 0, count: 0 }])
   ) as DashboardSummary["by_category"];
   let needs_review_count = 0;
+  let aston_paid_usd = 0;
+  let amy_paid_usd = 0;
+  let aston_share_usd = 0;
+  let amy_share_usd = 0;
   for (const e of transactions) {
     total_by_currency[e.currency] = (total_by_currency[e.currency] || 0) + e.amount;
     currencyCounts[e.currency] = (currencyCounts[e.currency] || 0) + 1;
@@ -30,9 +39,14 @@ function computeSummaryClient(transactions: Expense[]): DashboardSummary {
       by_category[e.category].count += 1;
     }
     if (e.needs_review) needs_review_count += 1;
+    const amtUsd = toUsd(e.amount, e.currency);
+    if (e.paid_by === "aston") aston_paid_usd += amtUsd;
+    else if (e.paid_by === "amy") amy_paid_usd += amtUsd;
+    aston_share_usd += toUsd(e.aston_share_amount, e.currency);
+    amy_share_usd += toUsd(e.amy_share_amount, e.currency);
   }
   const primary_currency =
-    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "JPY";
+    Object.entries(currencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "USD";
   return {
     total_by_currency,
     by_category,
@@ -40,7 +54,38 @@ function computeSummaryClient(transactions: Expense[]): DashboardSummary {
     total_primary: total_by_currency[primary_currency] || 0,
     count: transactions.length,
     needs_review_count,
+    aston_paid_usd: round2(aston_paid_usd),
+    amy_paid_usd: round2(amy_paid_usd),
+    aston_share_usd: round2(aston_share_usd),
+    amy_share_usd: round2(amy_share_usd),
+    settlement: computeSettlement(
+      transactions.map((e) => ({
+        amount: e.amount,
+        currency: e.currency,
+        paid_by: e.paid_by,
+        aston_share_amount: e.aston_share_amount,
+        amy_share_amount: e.amy_share_amount,
+      }))
+    ),
   };
+}
+
+const PAID_BY_LABEL: Record<PaidBy, string> = {
+  aston: "Aston",
+  amy: "Amy",
+  unknown: "待確認",
+};
+
+const BENEFIT_LABEL: Record<BenefitType, string> = {
+  shared_50_50: "50/50",
+  aston_only: "全 Aston",
+  amy_only: "全 Amy",
+  custom: "自訂",
+  unknown: "待確認",
+};
+
+function usd(n: number): string {
+  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function money(amount: number, currency: string): string {
@@ -99,6 +144,51 @@ function TotalSpend({ summary }: { summary: DashboardSummary }) {
         {extraCurrencies.length > 0 && (
           <span>+{extraCurrencies.length} 種其他幣別</span>
         )}
+      </div>
+    </section>
+  );
+}
+
+/* ── Split & settlement ──────────────────────────────────────────────────── */
+
+function SplitCard({ summary }: { summary: DashboardSummary }) {
+  const { settlement } = summary;
+  let settleText = "目前帳已平 🎉";
+  if (settlement.direction === "amy_owes_aston") {
+    settleText = `Amy 要給 Aston ${usd(settlement.amount_usd)}`;
+  } else if (settlement.direction === "aston_owes_amy") {
+    settleText = `Aston 要給 Amy ${usd(settlement.amount_usd)}`;
+  }
+
+  return (
+    <section className="mb-4">
+      <h2 className="text-[11px] uppercase tracking-widest text-[var(--muted)] mb-2">
+        分帳（USD 估算）
+      </h2>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
+            <p className="text-xs text-[var(--muted)]">Aston</p>
+            <p className="text-base font-semibold tabular-nums">
+              墊付 {usd(summary.aston_paid_usd)}
+            </p>
+            <p className="text-xs text-[var(--muted)] tabular-nums">
+              實際分攤 {usd(summary.aston_share_usd)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
+            <p className="text-xs text-[var(--muted)]">Amy</p>
+            <p className="text-base font-semibold tabular-nums">
+              墊付 {usd(summary.amy_paid_usd)}
+            </p>
+            <p className="text-xs text-[var(--muted)] tabular-nums">
+              實際分攤 {usd(summary.amy_share_usd)}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 pt-3 border-t border-[var(--border)] text-center">
+          <p className="text-sm font-semibold text-[var(--foreground)]">{settleText}</p>
+        </div>
       </div>
     </section>
   );
@@ -229,12 +319,22 @@ function TxCard({
           {getCategoryEmoji(e.category)}
         </span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{e.merchant}</p>
+          <p className="text-sm font-medium truncate">
+            {e.merchant_display_name_zh || e.merchant}
+          </p>
           <p className="text-xs text-[var(--muted)] truncate">
             {e.transaction_date || e.created_at.slice(0, 10)}
             {e.location ? ` · ${e.location}` : ""}
             {e.payment_method ? ` · ${e.payment_method}` : ""}
           </p>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--muted)]">
+              {PAID_BY_LABEL[e.paid_by]} 付
+            </span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--muted)]">
+              {BENEFIT_LABEL[e.benefit_type]}
+            </span>
+          </div>
         </div>
         <div className="text-right shrink-0">
           <p className="text-sm font-semibold tabular-nums">
@@ -345,7 +445,7 @@ function EmptyState() {
       <p className="text-3xl mb-3">🧾</p>
       <p className="text-sm font-medium mb-1">還沒有任何記錄</p>
       <p className="text-xs text-[var(--muted)] max-w-56 mx-auto leading-relaxed">
-        用 Telegram 傳一張收據或付款截圖，AI 會自動辨識並寫入。
+        用 Telegram 傳收據或打一句「Aston 晚餐 60」，AI 會辨識付款人與分攤並寫入。
       </p>
     </div>
   );
@@ -393,9 +493,9 @@ export default function Dashboard() {
       <div className="max-w-md mx-auto px-4 pb-24">
         <header className="pt-10 pb-5 flex items-end justify-between">
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">東京記帳 MVP</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Amyrica 旅費</h1>
             <p className="text-xs text-[var(--muted)] mt-0.5">
-              Telegram 自動記帳測試
+              Aston × Amy 美國畢業旅行
             </p>
           </div>
           <SourceState
@@ -422,6 +522,7 @@ export default function Dashboard() {
         {!loading && !error && data && data.summary.count > 0 && (
           <>
             <TotalSpend summary={data.summary} />
+            <SplitCard summary={data.summary} />
             <ByCurrency summary={data.summary} />
             <ByCategory summary={data.summary} />
             <NeedsReview items={reviewItems} onDeleted={handleDeleted} />
